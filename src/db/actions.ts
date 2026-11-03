@@ -7,9 +7,13 @@ import {
   type Sale,
   type SaleItem,
   type UnitType,
+  type WalletProvider,
+  type WalletTransaction,
+  type WalletType,
 } from './db'
 import type { CartLine } from '../lib/cart'
 import { priceForGrams } from '../lib/money'
+import { MIN_REFERENCE_LENGTH, normalizeReference, walletCashEffect } from '../lib/wallet'
 
 /** Errors with a message that is safe to show the cashier as-is. */
 export class PosError extends Error {}
@@ -22,10 +26,40 @@ const ALL = () => [
   db.customers,
   db.creditEntries,
   db.stockMovements,
+  db.walletTransactions,
 ]
 
 function assertInt(n: number, label: string, { min = 0 } = {}) {
   if (!Number.isInteger(n) || n < min) throw new PosError(`${label} is not valid`)
+}
+
+const PROVIDER_LABEL: Record<WalletProvider, string> = { gcash: 'GCash', maya: 'Maya' }
+
+/** Normalises and sanity-checks a typed reference number. */
+function checkReference(raw: string | undefined): string {
+  const ref = normalizeReference(raw)
+  if (!ref) throw new PosError('Enter the reference number')
+  if (ref.length < MIN_REFERENCE_LENGTH) throw new PosError('That reference number looks too short')
+  return ref
+}
+
+/**
+ * A reference may only be used once per provider, across sales, utang payments and wallet
+ * transactions. This catches the same payment screenshot being shown twice.
+ * Voided sales keep their reference on purpose: the money still arrived once.
+ */
+export async function referenceInUse(provider: WalletProvider, reference: string): Promise<boolean> {
+  const ref = normalizeReference(reference)
+  if (!ref) return false
+  if ((await db.sales.where('reference').equals(ref).filter((s) => s.method === provider).count()) > 0) return true
+  if ((await db.creditEntries.where('reference').equals(ref).filter((e) => e.method === provider).count()) > 0) return true
+  return (await db.walletTransactions.where('reference').equals(ref).filter((w) => w.provider === provider).count()) > 0
+}
+
+async function assertReferenceFree(provider: WalletProvider, reference: string): Promise<void> {
+  if (await referenceInUse(provider, reference)) {
+    throw new PosError(`${PROVIDER_LABEL[provider]} reference ${reference} was already used`)
+  }
 }
 
 /* ------------------------------------------------------------------ products */
@@ -191,6 +225,7 @@ export interface CheckoutOptions {
   method: PayMethod
   tendered?: number // cash only; defaults to exact amount
   customerId?: number // required for utang
+  reference?: string // required for gcash / maya
   note?: string
 }
 
@@ -221,8 +256,11 @@ export async function checkout(cart: CartLine[], opts: CheckoutOptions): Promise
     change = tendered - total
   }
   if (opts.method === 'utang' && !opts.customerId) throw new PosError('Choose who is taking utang')
+  const online = opts.method === 'gcash' || opts.method === 'maya' ? opts.method : undefined
+  const reference = online ? checkReference(opts.reference) : undefined
 
   return db.transaction('rw', ALL(), async () => {
+    if (online && reference) await assertReferenceFree(online, reference)
     if (opts.method === 'utang') {
       const c = await db.customers.get(opts.customerId!)
       if (!c) throw new PosError('Customer not found')
@@ -249,6 +287,7 @@ export async function checkout(cart: CartLine[], opts: CheckoutOptions): Promise
       tendered,
       change,
       customerId: opts.method === 'utang' ? opts.customerId : undefined,
+      reference,
       note: opts.note,
     }
     const saleId = await db.sales.add(saleData)
@@ -383,10 +422,23 @@ export async function addManualCharge(customerId: number, amount: number, note?:
   await db.creditEntries.add(entry)
 }
 
+export interface PaymentOptions {
+  method?: 'cash' | WalletProvider // default cash
+  reference?: string // required for gcash / maya
+  note?: string
+}
+
 /** Overpaying is rejected so a typo can't push a balance negative. */
-export async function recordPayment(customerId: number, amount: number, note?: string): Promise<void> {
+export async function recordPayment(
+  customerId: number,
+  amount: number,
+  opts: PaymentOptions = {},
+): Promise<void> {
   assertInt(amount, 'Amount', { min: 1 })
-  await db.transaction('rw', db.creditEntries, async () => {
+  const method = opts.method ?? 'cash'
+  const reference = method === 'cash' ? undefined : checkReference(opts.reference)
+  await db.transaction('rw', ALL(), async () => {
+    if (method !== 'cash' && reference) await assertReferenceFree(method, reference)
     const balance = await customerBalance(customerId)
     if (amount > balance) throw new PosError('That is more than the balance owed')
     await db.creditEntries.add({
@@ -394,7 +446,9 @@ export async function recordPayment(customerId: number, amount: number, note?: s
       createdAt: Date.now(),
       kind: 'payment',
       amount: -amount,
-      note: note?.trim() || undefined,
+      method,
+      reference,
+      note: opts.note?.trim() || undefined,
     })
   })
 }
@@ -403,12 +457,16 @@ export async function recordPayment(customerId: number, amount: number, note?: s
 
 export interface DaySummary {
   net: number // sales minus voids
-  profit: number // estimated: price minus cost at time of sale
+  profit: number // estimated: item profit (price minus cost at time of sale) + wallet fees
   saleCount: number
   voidCount: number
   byMethod: Record<PayMethod, number>
-  utangCollected: number // payments received on old utang
-  cashCollected: number // cash sales + utang payments (assumes payments are cash)
+  utangCollected: number // all payments received on old utang
+  utangCollectedCash: number // the part received in cash
+  walletFees: number // earned on GCash / Maya cash-in and cash-out
+  walletCashEffect: number // change in the drawer from cash-in (+) and cash-out (-)
+  walletCount: number // wallet transactions, voided ones not counted
+  cashCollected: number // net change in the drawer: cash sales + cash utang payments + wallet cash effect
 }
 
 /** [start, end) of the local calendar day containing `date`. */
@@ -439,13 +497,84 @@ export async function summaryBetween(start: number, end: number): Promise<DaySum
     else voidCount++
   }
   const utangCollected = -payments.reduce((s, e) => s + e.amount, 0)
+  const utangCollectedCash = -payments
+    .filter((e) => (e.method ?? 'cash') === 'cash')
+    .reduce((s, e) => s + e.amount, 0)
+
+  const wallet = await db.walletTransactions.where('createdAt').between(start, end, true, false).toArray()
+  let walletFees = 0
+  let walletCash = 0
+  let walletCount = 0
+  for (const w of wallet) {
+    walletFees += w.fee
+    walletCash += walletCashEffect(w)
+    walletCount += w.kind === 'tx' ? 1 : -1
+  }
+
   return {
     net,
-    profit,
+    profit: profit + walletFees,
     saleCount,
     voidCount,
     byMethod,
     utangCollected,
-    cashCollected: byMethod.cash + utangCollected,
+    utangCollectedCash,
+    walletFees,
+    walletCashEffect: walletCash,
+    walletCount,
+    cashCollected: byMethod.cash + utangCollectedCash + walletCash,
   }
+}
+
+/* ------------------------------------------------------------ GCash / Maya */
+
+export interface WalletInput {
+  provider: WalletProvider
+  type: WalletType
+  amount: number // centavos moved through the wallet
+  fee: number // centavos you earn
+  reference: string
+  note?: string
+}
+
+export async function createWalletTransaction(input: WalletInput): Promise<WalletTransaction> {
+  assertInt(input.amount, 'Amount', { min: 1 })
+  assertInt(input.fee, 'Fee')
+  const reference = checkReference(input.reference)
+  return db.transaction('rw', ALL(), async () => {
+    await assertReferenceFree(input.provider, reference)
+    const data: Omit<WalletTransaction, 'id'> = {
+      createdAt: Date.now(),
+      kind: 'tx',
+      provider: input.provider,
+      type: input.type,
+      amount: input.amount,
+      fee: input.fee,
+      reference,
+      note: input.note?.trim() || undefined,
+    }
+    const id = await db.walletTransactions.add(data)
+    return { ...data, id }
+  })
+}
+
+/** Like voidSale: a new negated row, the original is untouched, and it can only happen once. */
+export async function voidWalletTransaction(id: number): Promise<void> {
+  await db.transaction('rw', db.walletTransactions, async () => {
+    const tx = await db.walletTransactions.get(id)
+    if (!tx) throw new PosError('Transaction not found')
+    if (tx.kind !== 'tx') throw new PosError('Only transactions can be voided')
+    if ((await db.walletTransactions.where('voidOf').equals(id).count()) > 0) {
+      throw new PosError('This transaction was already voided')
+    }
+    await db.walletTransactions.add({
+      createdAt: Date.now(),
+      kind: 'void',
+      voidOf: id,
+      provider: tx.provider,
+      type: tx.type,
+      amount: -tx.amount,
+      fee: -tx.fee,
+    })
+  })
 }

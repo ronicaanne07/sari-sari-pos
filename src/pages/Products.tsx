@@ -12,6 +12,8 @@ import {
 } from '../db/actions'
 import { formatPeso, toCentavos } from '../lib/money'
 import { formatPrice, formatStock, parseStock, pesoToInput, stockToInput } from '../lib/units'
+import { barcodeKey } from '../lib/barcode'
+import { Scanner } from '../components/Scanner'
 import { Field, PageHeader, Segmented, Sheet, btn, inputCls, useToast } from '../ui'
 
 export function Products() {
@@ -24,7 +26,12 @@ export function Products() {
   const q = query.trim().toLowerCase()
   const list = (products ?? [])
     .filter((p) => p.archived === showArchived)
-    .filter((p) => !q || p.name.toLowerCase().includes(q) || p.barcode === query.trim())
+    .filter(
+      (p) =>
+        !q ||
+        p.name.toLowerCase().includes(q) ||
+        (!!p.barcode && barcodeKey(p.barcode) === barcodeKey(query)),
+    )
     .sort((a, b) => a.name.localeCompare(b.name))
 
   return (
@@ -103,6 +110,7 @@ function ProductSheet({ product, onClose }: { product: Product | null; onClose: 
   const [stock, setStock] = useState('')
   const [low, setLow] = useState(product ? stockToInput(product.lowStockAt, product.unitType) : '')
   const [favorite, setFavorite] = useState(product?.favorite ?? false)
+  const [scanning, setScanning] = useState(false)
 
   const priceC = toCentavos(price)
   const costC = cost.trim() === '' ? 0 : toCentavos(cost)
@@ -179,8 +187,13 @@ function ProductSheet({ product, onClose }: { product: Product | null; onClose: 
         >
           <input inputMode="decimal" value={low} onChange={(e) => setLow(e.target.value)} className={inputCls} />
         </Field>
-        <Field label="Barcode (optional)" hint="Type it, or scan it with a Bluetooth/USB scanner.">
-          <input value={barcode} onChange={(e) => setBarcode(e.target.value)} className={inputCls} />
+        <Field label="Barcode (optional)" hint="Scan it with the camera, a Bluetooth/USB scanner, or type it.">
+          <div className="flex gap-2">
+            <input value={barcode} onChange={(e) => setBarcode(e.target.value)} className={inputCls} aria-label="Barcode" />
+            <button type="button" className={`${btn.secondary} shrink-0 px-4`} onClick={() => setScanning(true)}>
+              📷 Scan
+            </button>
+          </div>
         </Field>
         <label className="flex items-center gap-2">
           <input type="checkbox" checked={favorite} onChange={(e) => setFavorite(e.target.checked)} />
@@ -197,6 +210,16 @@ function ProductSheet({ product, onClose }: { product: Product | null; onClose: 
           </>
         )}
       </div>
+      {scanning && (
+        <Scanner
+          title="Scan the product barcode"
+          onDetect={(code) => {
+            setBarcode(code)
+            setScanning(false)
+          }}
+          onClose={() => setScanning(false)}
+        />
+      )}
     </Sheet>
   )
 }

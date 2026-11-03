@@ -8,6 +8,9 @@ import Dexie, { type EntityTable } from 'dexie'
  */
 export type UnitType = 'piece' | 'weight'
 export type PayMethod = 'cash' | 'gcash' | 'maya' | 'utang'
+/** Online payment providers. Their payments and transfers carry a reference number. */
+export type WalletProvider = 'gcash' | 'maya'
+export type WalletType = 'cash_in' | 'cash_out'
 
 export interface Product {
   id: number
@@ -48,6 +51,7 @@ export interface Sale {
   tendered?: number // cash handed over
   change?: number
   customerId?: number // set for utang sales
+  reference?: string // GCash / Maya reference number (upper-case, no spaces)
   note?: string
 }
 
@@ -78,33 +82,35 @@ export interface CreditEntry {
   kind: 'charge' | 'payment' | 'void'
   amount: number
   saleId?: number
+  method?: 'cash' | WalletProvider // how a payment was received (cash when missing)
+  reference?: string // for gcash / maya payments
   note?: string
 }
 
-export interface Purchase {
+/**
+ * GCash / Maya cash-in and cash-out done for a customer. Append-only like sales:
+ * a void is a new row with negated amounts pointing at the original.
+ *
+ *  cash_in : customer hands over cash (amount + fee); you send `amount` from your wallet.
+ *  cash_out: you hand over cash (amount); the customer sends you `amount + fee` in the wallet.
+ *  In both cases `fee` is your earning.
+ */
+export interface WalletTransaction {
   id: number
   createdAt: number
-  supplier?: string
-  totalCost: number // integer centavos
+  kind: 'tx' | 'void'
+  voidOf?: number
+  provider: WalletProvider
+  type: WalletType
+  amount: number // centavos (negative for voids)
+  fee: number // centavos (negative for voids)
+  reference?: string
   note?: string
-  items: PurchaseItem[]
 }
 
-export interface PurchaseItem {
-  productId: number
-  productName: string
-  qty: number
-  unitCost: number // centavos per piece or kg
-  lineCost: number // centavos
-}
-
-export interface Expense {
-  id: number
-  createdAt: number
-  category: string
-  amount: number // integer centavos
-  paymentMethod: 'cash' | 'gcash' | 'maya' | 'bank' | 'other'
-  note?: string
+export interface Setting {
+  key: string
+  value: unknown
 }
 
 export interface StockMovement {
@@ -125,8 +131,8 @@ class TindahanDB extends Dexie {
   customers!: EntityTable<Customer, 'id'>
   creditEntries!: EntityTable<CreditEntry, 'id'>
   stockMovements!: EntityTable<StockMovement, 'id'>
-  purchases!: EntityTable<Purchase, 'id'>
-  expenses!: EntityTable<Expense, 'id'>
+  walletTransactions!: EntityTable<WalletTransaction, 'id'>
+  settings!: EntityTable<Setting, 'key'>
 
   constructor() {
     super('tindahan')
@@ -140,16 +146,13 @@ class TindahanDB extends Dexie {
       creditEntries: '++id, customerId, createdAt',
       stockMovements: '++id, productId, createdAt, refId',
     })
+    // v2: payment references (indexed so duplicates are caught), wallet transactions, settings.
+    // Tables not listed here carry over unchanged, so phones already on v1 upgrade in place.
     this.version(2).stores({
-      products: '++id, name, barcode',
-      productPacks: '++id, productId',
-      sales: '++id, createdAt, kind, voidOf, customerId',
-      saleItems: '++id, saleId, productId',
-      customers: '++id, name',
-      creditEntries: '++id, customerId, createdAt',
-      stockMovements: '++id, productId, createdAt, refId',
-      purchases: '++id, createdAt',
-      expenses: '++id, createdAt, category',
+      sales: '++id, createdAt, kind, voidOf, customerId, reference',
+      creditEntries: '++id, customerId, createdAt, reference',
+      walletTransactions: '++id, createdAt, kind, voidOf, reference',
+      settings: 'key',
     })
   }
 }
@@ -164,6 +167,9 @@ export const ALL_TABLES = [
   'customers',
   'creditEntries',
   'stockMovements',
-  'purchases',
-  'expenses',
+  'walletTransactions',
+  'settings',
 ] as const
+
+/** Tables that backups made by version 1 of the app do not contain. */
+export const OPTIONAL_BACKUP_TABLES: readonly (typeof ALL_TABLES)[number][] = ['walletTransactions', 'settings']

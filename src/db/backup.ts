@@ -1,34 +1,40 @@
-import { ALL_TABLES, db } from './db'
+import { ALL_TABLES, OPTIONAL_BACKUP_TABLES, db } from './db'
 import { PosError } from './actions'
+
+type TableName = (typeof ALL_TABLES)[number]
 
 export interface BackupFile {
   app: 'tindahan-pos'
-  version: 1
+  version: 1 | 2 // 1 = before wallet transactions and settings existed
   exportedAt: number
-  tables: Record<(typeof ALL_TABLES)[number], unknown[]>
+  tables: Partial<Record<TableName, unknown[]>>
 }
 
 export async function exportBackup(): Promise<BackupFile> {
-  const tables = {} as BackupFile['tables']
+  const tables: BackupFile['tables'] = {}
   for (const name of ALL_TABLES) tables[name] = await db[name].toArray()
-  return { app: 'tindahan-pos', version: 1, exportedAt: Date.now(), tables }
+  return { app: 'tindahan-pos', version: 2, exportedAt: Date.now(), tables }
 }
 
-/** Replaces ALL current data with the backup. Validates the shape first so a bad file changes nothing. */
+/**
+ * Replaces ALL current data with the backup. Validates the shape first so a bad file changes
+ * nothing. Backups from the first version of the app (no wallet transactions or settings) still load.
+ */
 export async function importBackup(raw: unknown): Promise<void> {
   const file = raw as Partial<BackupFile> | null
-  if (!file || file.app !== 'tindahan-pos' || file.version !== 1 || !file.tables) {
+  if (!file || file.app !== 'tindahan-pos' || (file.version !== 1 && file.version !== 2) || !file.tables) {
     throw new PosError('This is not a Tindahan POS backup file')
   }
-  for (const name of ALL_TABLES) {
-    if (!Array.isArray(file.tables[name])) throw new PosError(`Backup is missing "${name}"`)
-  }
   const tables = file.tables
+  for (const name of ALL_TABLES) {
+    if (Array.isArray(tables[name])) continue
+    if (!OPTIONAL_BACKUP_TABLES.includes(name)) throw new PosError(`Backup is missing "${name}"`)
+  }
   await db.transaction('rw', ALL_TABLES.map((n) => db[n]), async () => {
     for (const name of ALL_TABLES) {
       await db[name].clear()
       // Rows keep their original ids so sales, items and utang entries stay linked.
-      await (db[name] as unknown as { bulkAdd(rows: unknown[]): Promise<unknown> }).bulkAdd(tables[name])
+      await (db[name] as unknown as { bulkAdd(rows: unknown[]): Promise<unknown> }).bulkAdd(tables[name] ?? [])
     }
   })
 }

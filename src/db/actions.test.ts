@@ -94,7 +94,7 @@ describe('checkout', () => {
     const { egg } = await setup()
     const trayId = await createPack(egg.id, { name: 'Tray of 30', unitsPerPack: 30, packCost: 24000, packPrice: 29000 })
     const tray = (await db.productPacks.get(trayId))!
-    const sale = await checkout(addPack([], egg, tray), { method: 'gcash' })
+    const sale = await checkout(addPack([], egg, tray), { method: 'gcash', reference: 'TRAY1234' })
     expect(sale.total).toBe(29000)
     expect(sale.profit).toBe(29000 - 30 * 800)
     expect((await db.products.get(egg.id))!.stock).toBe(0)
@@ -178,7 +178,7 @@ describe('daily summary', () => {
     const { egg } = await setup()
     const nena = await addCustomer('Aling Nena')
     await checkout(addPiece([], egg), { method: 'cash' }) // +1000
-    await checkout(addPiece([], egg), { method: 'gcash' }) // +1000
+    await checkout(addPiece([], egg), { method: 'gcash', reference: 'GC-1001' }) // +1000
     await checkout(addPiece(addPiece([], egg), egg), { method: 'utang', customerId: nena }) // +2000
     const mistake = await checkout(addPiece([], egg), { method: 'cash' }) // +1000
     await voidSale(mistake.id) // -1000

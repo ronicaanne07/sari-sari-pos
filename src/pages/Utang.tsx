@@ -3,7 +3,10 @@ import { useLiveQuery } from 'dexie-react-hooks'
 import { db, type CreditEntry, type Customer } from '../db/db'
 import { addCustomer, addManualCharge, recordPayment } from '../db/actions'
 import { formatPeso, toCentavos } from '../lib/money'
-import { Field, PageHeader, Sheet, btn, formatDateTime, inputCls, useToast } from '../ui'
+import { normalizeReference } from '../lib/wallet'
+import { ReferenceField, useReferenceStatus } from '../components/ReferenceField'
+import { useReceipt } from '../components/ReceiptSheet'
+import { Field, PageHeader, Segmented, Sheet, btn, formatDateTime, inputCls, useToast } from '../ui'
 
 interface Row {
   customer: Customer
@@ -121,25 +124,47 @@ const KIND_LABEL: Record<CreditEntry['kind'], string> = {
 
 function CustomerSheet({ customer, balance, onClose }: { customer: Customer; balance: number; onClose: () => void }) {
   const toast = useToast()
+  const { showReceipt } = useReceipt()
   const entries = useLiveQuery(
     () => db.creditEntries.where('customerId').equals(customer.id).reverse().sortBy('createdAt'),
     [customer.id],
   )
   const [mode, setMode] = useState<'payment' | 'charge'>('payment')
+  const [payMethod, setPayMethod] = useState<'cash' | 'gcash' | 'maya'>('cash')
   const [amountText, setAmountText] = useState('')
+  const [reference, setReference] = useState('')
   const [note, setNote] = useState('')
   const amount = toCentavos(amountText)
+  const online = mode === 'payment' && payMethod !== 'cash' ? payMethod : null
+  const refStatus = useReferenceStatus(online, reference)
+  const canSubmit = !!amount && (!online || refStatus === 'ok')
 
   async function submit() {
     if (!amount) return
-    const res = await toast.run(
-      () => (mode === 'payment' ? recordPayment(customer.id, amount, note) : addManualCharge(customer.id, amount, note)),
-      mode === 'payment' ? 'Payment recorded' : 'Utang added',
-    )
-    if (res.ok) {
-      setAmountText('')
-      setNote('')
+    if (mode === 'charge') {
+      const res = await toast.run(() => addManualCharge(customer.id, amount, note), 'Utang added')
+      if (res.ok) {
+        setAmountText('')
+        setNote('')
+      }
+      return
     }
+    const res = await toast.run(async () => {
+      await recordPayment(customer.id, amount, {
+        method: payMethod,
+        reference: online ? normalizeReference(reference) : undefined,
+        note,
+      })
+      // the payment row that was just saved: newest credit entry of this customer
+      const saved = (await db.creditEntries.where('customerId').equals(customer.id).sortBy('createdAt')).at(-1)
+      return saved?.id
+    })
+    if (!res.ok) return
+    setAmountText('')
+    setReference('')
+    setNote('')
+    const entryId = res.value
+    toast.show('Payment recorded', 'ok', entryId ? { label: 'Receipt', onClick: () => showReceipt({ kind: 'payment', id: entryId }) } : undefined)
   }
 
   return (
@@ -171,8 +196,20 @@ function CustomerSheet({ customer, balance, onClose }: { customer: Customer; bal
             Pay in full ({formatPeso(balance)})
           </button>
         )}
+        {mode === 'payment' && (
+          <Segmented
+            value={payMethod}
+            onChange={setPayMethod}
+            options={[
+              { value: 'cash', label: 'Cash' },
+              { value: 'gcash', label: 'GCash' },
+              { value: 'maya', label: 'Maya' },
+            ]}
+          />
+        )}
+        {online && <ReferenceField provider={online} value={reference} onChange={setReference} status={refStatus} />}
         <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Note (optional)" className={inputCls} aria-label="Note" />
-        <button className={`${btn.primary} w-full`} disabled={!amount} onClick={submit}>
+        <button className={`${btn.primary} w-full`} disabled={!canSubmit} onClick={submit}>
           {mode === 'payment' ? 'Save payment' : 'Save utang'}
         </button>
       </div>
@@ -188,8 +225,16 @@ function CustomerSheet({ customer, balance, onClose }: { customer: Customer; bal
                 <span className="block font-medium">{KIND_LABEL[e.kind]}</span>
                 <span className="text-slate-500">
                   {formatDateTime(e.createdAt)}
+                  {e.kind === 'payment' && e.method && e.method !== 'cash'
+                    ? ` · ${e.method === 'gcash' ? 'GCash' : 'Maya'} ref ${e.reference ?? ''}`
+                    : ''}
                   {e.note ? ` · ${e.note}` : ''}
                 </span>
+                {e.kind === 'payment' && (
+                  <button className="ml-2 text-xs font-semibold text-brand-700 underline" onClick={() => showReceipt({ kind: 'payment', id: e.id })}>
+                    Receipt
+                  </button>
+                )}
               </span>
               <span className={`font-semibold ${e.amount > 0 ? 'text-red-600' : 'text-brand-700'}`}>
                 {e.amount > 0 ? '+' : ''}

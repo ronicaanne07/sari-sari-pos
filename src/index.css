@@ -32,3 +32,25 @@ button {
 .safe-bottom {
   padding-bottom: env(safe-area-inset-bottom);
 }
+
+/* Printing from the receipt sheet prints only the receipt, sized for a 58 mm roll. */
+@media print {
+  @page {
+    size: 58mm auto;
+    margin: 2mm;
+  }
+  body * {
+    visibility: hidden;
+  }
+  .receipt-print,
+  .receipt-print * {
+    visibility: visible;
+  }
+  .receipt-print {
+    position: absolute;
+    left: 0;
+    top: 0;
+    margin: 0;
+    font-size: 10pt;
+  }
+}

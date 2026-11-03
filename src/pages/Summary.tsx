@@ -4,15 +4,18 @@ import { db, type PayMethod } from '../db/db'
 import { dayRange, lowStockProducts, summaryBetween, voidSale } from '../db/actions'
 import { exportBackup, importBackup, resetAllData } from '../db/backup'
 import { seedSampleProducts } from '../db/seed'
-import { cloudConfigured, downloadCloudBackup, uploadCloudBackup } from '../db/cloud'
-import { formatPeso } from '../lib/money'
-import { formatStock } from '../lib/units'
-import { PageHeader, btn, formatDateTime, useToast } from '../ui'
+import { formatPeso, toCentavos } from '../lib/money'
+import { formatStock, pesoToInput } from '../lib/units'
+import { saveSettings, useSettings } from '../db/settings'
+import { useReceipt } from '../components/ReceiptSheet'
+import { Field, PageHeader, Sheet, btn, formatDateTime, inputCls, useToast } from '../ui'
 
 const METHOD_LABEL: Record<PayMethod, string> = { cash: 'Cash', gcash: 'GCash', maya: 'Maya', utang: 'Utang' }
 
 export function Summary() {
   const toast = useToast()
+  const { showReceipt } = useReceipt()
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const [day, setDay] = useState(() => new Date())
   const [start, end] = dayRange(day)
   const isToday = start === dayRange(new Date())[0]
@@ -43,7 +46,14 @@ export function Summary() {
 
   return (
     <div>
-      <PageHeader title="Summary" />
+      <PageHeader
+        title="Summary"
+        right={
+          <button className={`${btn.chip} py-2`} onClick={() => setSettingsOpen(true)}>
+            ⚙ Settings
+          </button>
+        }
+      />
 
       <div className="flex items-center justify-between px-4 pt-3">
         <button className={btn.chip} onClick={() => shiftDay(-1)} aria-label="Previous day">
@@ -64,7 +74,11 @@ export function Summary() {
             <Stat label="Estimated profit" value={formatPeso(summary.profit)} big />
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <Stat label="Cash collected" value={formatPeso(summary.cashCollected)} hint="Cash sales + utang paid" />
+            <Stat
+              label="Cash in drawer today"
+              value={formatPeso(summary.cashCollected)}
+              hint="Cash sales + cash utang paid + cash-in − cash-out"
+            />
             <Stat
               label="Transactions"
               value={String(summary.saleCount - summary.voidCount)}
@@ -81,7 +95,19 @@ export function Summary() {
             ))}
             <div className="flex justify-between border-t border-slate-100 pt-1 text-sm text-slate-500">
               <span>Utang collected</span>
-              <span>{formatPeso(summary.utangCollected)}</span>
+              <span>
+                {formatPeso(summary.utangCollected)}
+                {summary.utangCollected !== summary.utangCollectedCash &&
+                  ` (cash ${formatPeso(summary.utangCollectedCash)})`}
+              </span>
+            </div>
+            <div className="flex justify-between text-sm text-slate-500">
+              <span>GCash/Maya cash-in/out fees</span>
+              <span>{formatPeso(summary.walletFees)}</span>
+            </div>
+            <div className="flex justify-between text-sm text-slate-500">
+              <span>Cash-in/out effect on drawer</span>
+              <span>{formatPeso(summary.walletCashEffect)}</span>
             </div>
           </div>
         </div>
@@ -111,22 +137,30 @@ export function Summary() {
         ) : (
           <ul className="divide-y divide-slate-100">
             {sales.map(({ sale, voided, names }) => (
-              <li key={sale.id} className="flex items-center gap-3 py-2">
-                <div className="min-w-0 flex-1">
-                  <div className={`truncate text-sm ${voided ? 'text-slate-400 line-through' : ''}`}>
-                    {sale.kind === 'void' ? 'Void of an earlier sale' : names || 'Sale'}
+              <li key={sale.id} className="py-2">
+                <div className="flex items-center gap-3">
+                  <div className="min-w-0 flex-1">
+                    <div className={`truncate text-sm ${voided ? 'text-slate-400 line-through' : ''}`}>
+                      {sale.kind === 'void' ? 'Void of an earlier sale' : names || 'Sale'}
+                    </div>
+                    <div className="text-xs text-slate-500">
+                      {formatDateTime(sale.createdAt)} · {METHOD_LABEL[sale.method]}
+                      {sale.reference ? ` ref ${sale.reference}` : ''}
+                      {voided ? ' · voided' : ''}
+                    </div>
                   </div>
-                  <div className="text-xs text-slate-500">
-                    {formatDateTime(sale.createdAt)} · {METHOD_LABEL[sale.method]}
-                    {voided ? ' · voided' : ''}
-                  </div>
+                  <div className={`font-semibold ${sale.total < 0 ? 'text-red-600' : ''}`}>{formatPeso(sale.total)}</div>
                 </div>
-                <div className={`font-semibold ${sale.total < 0 ? 'text-red-600' : ''}`}>{formatPeso(sale.total)}</div>
-                {sale.kind === 'sale' && !voided && (
-                  <button className={btn.chip} onClick={() => onVoid(sale.id)}>
-                    Void
+                <div className="mt-1 flex gap-2">
+                  <button className={btn.chip} onClick={() => showReceipt({ kind: 'sale', id: sale.id })}>
+                    Receipt
                   </button>
-                )}
+                  {sale.kind === 'sale' && !voided && (
+                    <button className={btn.chip} onClick={() => onVoid(sale.id)}>
+                      Void
+                    </button>
+                  )}
+                </div>
               </li>
             ))}
           </ul>
@@ -134,7 +168,83 @@ export function Summary() {
       </section>
 
       <DataSection />
+      {settingsOpen && <SettingsSheet onClose={() => setSettingsOpen(false)} />}
     </div>
+  )
+}
+
+/** Store details printed on receipts, plus the suggested GCash/Maya fee. */
+function SettingsSheet({ onClose }: { onClose: () => void }) {
+  const toast = useToast()
+  const s = useSettings()
+  const [storeName, setStoreName] = useState(s.storeName)
+  const [address, setAddress] = useState(s.address)
+  const [footer, setFooter] = useState(s.footer)
+  const [autoReceipt, setAutoReceipt] = useState(s.autoReceipt)
+  const [percent, setPercent] = useState(String(s.walletFeePercent))
+  const [minFee, setMinFee] = useState(pesoToInput(s.walletMinFee))
+
+  const percentN = Number(percent)
+  const minFeeC = toCentavos(minFee)
+  const valid = Number.isFinite(percentN) && percentN >= 0 && percentN <= 100 && minFeeC !== null
+
+  async function save() {
+    if (!valid || minFeeC === null) return
+    const res = await toast.run(
+      () =>
+        saveSettings({
+          storeName: storeName.trim() || 'My Tindahan',
+          address: address.trim(),
+          footer: footer.trim(),
+          autoReceipt,
+          walletFeePercent: percentN,
+          walletMinFee: minFeeC,
+        }),
+      'Settings saved',
+    )
+    if (res.ok) onClose()
+  }
+
+  return (
+    <Sheet
+      title="Settings"
+      onClose={onClose}
+      footer={
+        <button className={`${btn.primary} w-full`} disabled={!valid} onClick={save}>
+          Save
+        </button>
+      }
+    >
+      <div className="space-y-3">
+        <h3 className="font-semibold">Receipt</h3>
+        <Field label="Store name">
+          <input value={storeName} onChange={(e) => setStoreName(e.target.value)} className={inputCls} />
+        </Field>
+        <Field label="Address / contact (optional)">
+          <textarea value={address} onChange={(e) => setAddress(e.target.value)} rows={2} className={inputCls} />
+        </Field>
+        <Field label="Message at the bottom">
+          <input value={footer} onChange={(e) => setFooter(e.target.value)} className={inputCls} />
+        </Field>
+        <label className="flex items-center gap-2">
+          <input type="checkbox" checked={autoReceipt} onChange={(e) => setAutoReceipt(e.target.checked)} />
+          <span>Show the receipt right after every sale</span>
+        </label>
+
+        <h3 className="pt-2 font-semibold">GCash / Maya cash-in and cash-out</h3>
+        <div className="grid grid-cols-2 gap-3">
+          <Field label="Suggested fee (%)">
+            <input inputMode="decimal" value={percent} onChange={(e) => setPercent(e.target.value)} className={inputCls} />
+          </Field>
+          <Field label="Minimum fee (₱)">
+            <input inputMode="decimal" value={minFee} onChange={(e) => setMinFee(e.target.value)} className={inputCls} />
+          </Field>
+        </div>
+        <p className="text-xs text-slate-500">
+          The fee is only a suggestion. You can type a different fee on each transaction.
+        </p>
+      </div>
+    </Sheet>
   )
 }
 
@@ -152,16 +262,6 @@ function Stat({ label, value, hint, big }: { label: string; value: string; hint?
 function DataSection() {
   const toast = useToast()
   const fileRef = useRef<HTMLInputElement>(null)
-
-  async function onCloudUpload() {
-    if (!window.confirm('Upload this device’s complete database to the configured cloud store? This replaces the shared snapshot.')) return
-    await toast.run(uploadCloudBackup, 'Cloud backup uploaded')
-  }
-
-  async function onCloudDownload() {
-    if (!window.confirm('Download the shared cloud snapshot and REPLACE all local data? Download a local backup first.')) return
-    await toast.run(downloadCloudBackup, 'Cloud data restored')
-  }
 
   async function onExport() {
     await toast.run(async () => {
@@ -193,14 +293,8 @@ function DataSection() {
     <section className="m-4 mt-8 space-y-2 rounded-2xl border border-slate-200 bg-white p-3">
       <h3 className="font-semibold">Your data</h3>
       <p className="text-sm text-slate-500">
-        Local data is stored on this device. Configure Supabase in .env and follow CLOUD_SETUP.md to share snapshots across devices.
+        Everything is stored on this phone. Download a backup regularly: if the phone is lost, the backup is the only copy.
       </p>
-      <div className="rounded-xl border border-slate-200 p-3 space-y-2">
-        <h4 className="font-medium">Cloud database {cloudConfigured() ? '· configured' : '· not configured'}</h4>
-        <p className="text-xs text-slate-500">Cloud sync uses a full database snapshot. Use one device to make changes at a time; syncing does not merge simultaneous edits.</p>
-        <button className={`${btn.secondary} w-full`} disabled={!cloudConfigured()} onClick={onCloudUpload}>Upload local data to cloud</button>
-        <button className={`${btn.secondary} w-full`} disabled={!cloudConfigured()} onClick={onCloudDownload}>Download cloud data to this device</button>
-      </div>
       <button className={`${btn.secondary} w-full`} onClick={onExport}>
         Download backup
       </button>

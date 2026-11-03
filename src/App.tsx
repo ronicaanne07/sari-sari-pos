@@ -1,20 +1,21 @@
 import { useState } from 'react'
 import type { CartLine } from './lib/cart'
 import { ToastProvider } from './ui'
+import { ReceiptProvider } from './components/ReceiptSheet'
 import { Sell } from './pages/Sell'
 import { Products } from './pages/Products'
+import { Wallet } from './pages/Wallet'
 import { Utang } from './pages/Utang'
 import { Summary } from './pages/Summary'
-import { Finance } from './pages/Finance'
 
-type Tab = 'sell' | 'products' | 'utang' | 'summary' | 'finance'
+type Tab = 'sell' | 'products' | 'wallet' | 'utang' | 'summary'
 
 const TABS: { id: Tab; label: string; icon: string }[] = [
   { id: 'sell', label: 'Sell', icon: '🛒' },
   { id: 'products', label: 'Products', icon: '📦' },
+  { id: 'wallet', label: 'Wallet', icon: '📱' },
   { id: 'utang', label: 'Utang', icon: '📒' },
   { id: 'summary', label: 'Summary', icon: '📊' },
-  { id: 'finance', label: 'Finance', icon: '🧾' },
 ]
 
 export default function App() {
@@ -24,13 +25,14 @@ export default function App() {
 
   return (
     <ToastProvider>
+      <ReceiptProvider>
       <div className="mx-auto flex h-full max-w-xl flex-col bg-slate-50">
         <main className="flex-1 overflow-y-auto">
           {tab === 'sell' && <Sell cart={cart} setCart={setCart} />}
           {tab === 'products' && <Products />}
+          {tab === 'wallet' && <Wallet />}
           {tab === 'utang' && <Utang />}
           {tab === 'summary' && <Summary />}
-          {tab === 'finance' && <Finance />}
         </main>
         <nav className="safe-bottom grid grid-cols-5 border-t border-slate-200 bg-white" aria-label="Main">
           {TABS.map((t) => (
@@ -45,12 +47,13 @@ export default function App() {
               <span className="text-xl leading-none">{t.icon}</span>
               {t.label}
               {t.id === 'sell' && cart.length > 0 && tab !== 'sell' && (
-                <span className="absolute right-6 top-1 rounded-full bg-red-600 px-1.5 text-[10px] text-white">{cart.length}</span>
+                <span className="absolute right-3 top-1 rounded-full bg-red-600 px-1.5 text-[10px] text-white">{cart.length}</span>
               )}
             </button>
           ))}
         </nav>
       </div>
+      </ReceiptProvider>
     </ToastProvider>
   )
 }

@@ -20,6 +20,12 @@ import {
   toCentavos,
 } from '../lib/money'
 import { formatPrice, formatStock } from '../lib/units'
+import { findByBarcode } from '../lib/barcode'
+import { normalizeReference } from '../lib/wallet'
+import { useSettings } from '../db/settings'
+import { Scanner } from '../components/Scanner'
+import { ReferenceField, useReferenceStatus } from '../components/ReferenceField'
+import { useReceipt } from '../components/ReceiptSheet'
 import { PageHeader, Segmented, Sheet, btn, inputCls, useToast } from '../ui'
 
 type Tile = { key: string; product: Product; pack?: ProductPack }
@@ -37,6 +43,8 @@ export function Sell({ cart, setCart }: { cart: CartLine[]; setCart: SetCart }) 
   const [query, setQuery] = useState('')
   const [weighing, setWeighing] = useState<Product | null>(null)
   const [cartOpen, setCartOpen] = useState(false)
+  const [scanning, setScanning] = useState(false)
+  const toast = useToast()
 
   const tiles = useMemo<Tile[]>(() => {
     if (!products) return []
@@ -71,11 +79,27 @@ export function Sell({ cart, setCart }: { cart: CartLine[]; setCart: SetCart }) 
   function onSearchSubmit(e: FormEvent) {
     e.preventDefault()
     const code = query.trim()
-    const hit = code ? products?.find((p) => !p.archived && p.barcode === code) : undefined
+    const hit = code ? findByBarcode(products?.filter((p) => !p.archived) ?? [], code) : undefined
     if (hit) {
       tapProduct(hit)
       setQuery('')
     }
+  }
+
+  /** A code from the camera. Pieces go straight into the cart; weighed items need a weight first. */
+  function onScan(code: string) {
+    const hit = findByBarcode(products?.filter((p) => !p.archived) ?? [], code)
+    if (!hit) {
+      toast.show(`No product has barcode ${code}. Add the barcode in Products.`, 'error')
+      return
+    }
+    if (hit.unitType === 'weight') {
+      setScanning(false)
+      setWeighing(hit)
+      return
+    }
+    setCart((c) => addPiece(c, hit))
+    toast.show(`Added ${hit.name}`)
   }
 
   const total = cartTotal(cart)
@@ -83,15 +107,23 @@ export function Sell({ cart, setCart }: { cart: CartLine[]; setCart: SetCart }) 
   return (
     <div className="flex min-h-full flex-col">
       <PageHeader title="Sell" />
-      <form onSubmit={onSearchSubmit} className="px-4 pt-3">
+      <form onSubmit={onSearchSubmit} className="flex gap-2 px-4 pt-3">
         <input
           type="search"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
-          placeholder="Search item or scan barcode"
+          placeholder="Search item or barcode"
           className={inputCls}
           aria-label="Search items"
         />
+        <button
+          type="button"
+          onClick={() => setScanning(true)}
+          className={`${btn.secondary} shrink-0 px-4`}
+          aria-label="Scan barcode with camera"
+        >
+          📷 Scan
+        </button>
       </form>
 
       {!products ? (
@@ -152,6 +184,15 @@ export function Sell({ cart, setCart }: { cart: CartLine[]; setCart: SetCart }) 
         />
       )}
       {cartOpen && <CartSheet cart={cart} setCart={setCart} onClose={() => setCartOpen(false)} />}
+      {scanning && (
+        <Scanner
+          continuous
+          title="Scan items"
+          hint="Point at each item's barcode"
+          onDetect={onScan}
+          onClose={() => setScanning(false)}
+        />
+      )}
     </div>
   )
 }
@@ -284,13 +325,18 @@ function CartSheet({
   onClose: () => void
 }) {
   const toast = useToast()
+  const { showReceipt } = useReceipt()
+  const settings = useSettings()
   const customers = useLiveQuery(() => db.customers.orderBy('name').toArray(), [])
   const total = cartTotal(cart)
   const [method, setMethod] = useState<PayMethod>('cash')
   const [tenderedText, setTenderedText] = useState('')
   const [customerId, setCustomerId] = useState('') // '' | 'new' | customer id
   const [newName, setNewName] = useState('')
+  const [reference, setReference] = useState('')
   const [busy, setBusy] = useState(false)
+  const online = method === 'gcash' || method === 'maya' ? method : null
+  const refStatus = useReferenceStatus(online, reference)
 
   // Removing the last line closes the sheet.
   useEffect(() => {
@@ -302,7 +348,8 @@ function CartSheet({
   const change = method === 'cash' && tendered !== null ? tendered - total : 0
   const utangReady =
     method !== 'utang' || (customerId === 'new' ? newName.trim() !== '' : customerId !== '')
-  const canConfirm = cart.length > 0 && !cashShort && utangReady && !busy
+  const refReady = !online || refStatus === 'ok'
+  const canConfirm = cart.length > 0 && !cashShort && utangReady && refReady && !busy
 
   const cashChips = [...new Set([50, 100, 200, 500, 1000].map((p) => p * 100).filter((c) => c >= total))]
 
@@ -315,13 +362,22 @@ function CartSheet({
         method,
         tendered: method === 'cash' ? (tendered ?? undefined) : undefined,
         customerId: cid,
+        reference: online ? normalizeReference(reference) : undefined,
       })
     })
     setBusy(false)
     if (!res.ok) return
+    const sale = res.value
     setCart([])
     onClose()
-    toast.show(res.value.change ? `Saved · change ${formatPeso(res.value.change)}` : 'Saved')
+    if (settings.autoReceipt) {
+      showReceipt({ kind: 'sale', id: sale.id })
+    } else {
+      toast.show(sale.change ? `Saved · change ${formatPeso(sale.change)}` : 'Saved', 'ok', {
+        label: 'Receipt',
+        onClick: () => showReceipt({ kind: 'sale', id: sale.id }),
+      })
+    }
   }
 
   return (
@@ -417,6 +473,10 @@ function CartSheet({
               )}
             </div>
           </>
+        )}
+
+        {online && (
+          <ReferenceField provider={online} value={reference} onChange={setReference} status={refStatus} />
         )}
 
         {method === 'utang' && (

@@ -28,8 +28,13 @@ export const inputCls =
 
 export type RunResult<T> = { ok: true; value: T } | { ok: false }
 
+export interface ToastAction {
+  label: string
+  onClick: () => void
+}
+
 interface ToastApi {
-  show: (message: string, kind?: 'ok' | 'error') => void
+  show: (message: string, kind?: 'ok' | 'error', action?: ToastAction) => void
   /** Runs an action; PosError messages are shown to the cashier, anything else is logged. */
   run: <T>(fn: () => Promise<T>, okMessage?: string) => Promise<RunResult<T>>
 }
@@ -43,12 +48,18 @@ export function useToast(): ToastApi {
 }
 
 export function ToastProvider({ children }: { children: ReactNode }) {
-  const [toast, setToast] = useState<{ id: number; message: string; kind: 'ok' | 'error' } | null>(null)
+  const [toast, setToast] = useState<{
+    id: number
+    message: string
+    kind: 'ok' | 'error'
+    action?: ToastAction
+  } | null>(null)
 
-  const show = useCallback((message: string, kind: 'ok' | 'error' = 'ok') => {
-    const id = Date.now()
-    setToast({ id, message, kind })
-    setTimeout(() => setToast((t) => (t?.id === id ? null : t)), 3500)
+  const show = useCallback((message: string, kind: 'ok' | 'error' = 'ok', action?: ToastAction) => {
+    const id = Date.now() + Math.random()
+    setToast({ id, message, kind, action })
+    // longer when there is a button to tap
+    setTimeout(() => setToast((t) => (t?.id === id ? null : t)), action ? 7000 : 3500)
   }, [])
 
   const run = useCallback(
@@ -74,11 +85,22 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       {toast && (
         <div
           role="status"
-          className={`fixed inset-x-4 top-4 z-50 mx-auto max-w-md rounded-xl px-4 py-3 text-center text-base font-medium text-white shadow-lg ${
+          className={`fixed inset-x-4 top-4 z-50 mx-auto flex max-w-md items-center justify-center gap-3 rounded-xl px-4 py-3 text-center text-base font-medium text-white shadow-lg ${
             toast.kind === 'error' ? 'bg-red-600' : 'bg-slate-900'
           }`}
         >
-          {toast.message}
+          <span>{toast.message}</span>
+          {toast.action && (
+            <button
+              className="shrink-0 rounded-lg bg-white/20 px-3 py-1 text-sm font-bold active:bg-white/30"
+              onClick={() => {
+                toast.action!.onClick()
+                setToast(null)
+              }}
+            >
+              {toast.action.label}
+            </button>
+          )}
         </div>
       )}
     </ToastContext.Provider>
