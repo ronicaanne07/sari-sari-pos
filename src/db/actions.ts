@@ -62,6 +62,77 @@ async function assertReferenceFree(provider: WalletProvider, reference: string):
   }
 }
 
+
+/* ------------------------------------------------------------------ Categories */
+export async function createCategory(name: string): Promise<number> {
+  const n = name.trim()
+  if (!n) throw new PosError('Category name is required')
+  const all = await db.categories.toArray()
+  if (all.some((c) => c.name.toLowerCase() === n.toLowerCase())) {
+    throw new PosError('That category already exists')
+  }
+  return db.categories.add({ name: n, sortOrder: all.length })
+}
+
+export async function renameCategory(
+  id: number,
+  name: string
+): Promise<void> {
+  const n = name.trim()
+
+  if (!n) {
+    throw new PosError('Category name is required')
+  }
+
+  const existing = await db.categories.toArray()
+
+  if (
+    existing.some(
+      (c) => c.id !== id && c.name.toLowerCase() === n.toLowerCase()
+    )
+  ) {
+    throw new PosError('That category already exists')
+  }
+
+  const category = await db.categories.get(id)
+
+  if (!category) {
+    throw new PosError('Category not found')
+  }
+
+  await db.categories.update(id, { name: n })
+}
+
+export async function deleteCategory(id: number): Promise<number> {
+  return db.transaction(
+    'rw',
+    [db.categories, db.products],
+    async () => {
+      const category = await db.categories.get(id)
+
+      if (!category) {
+        throw new PosError('Category not found')
+      }
+
+      const affected = await db.products
+        .where('categoryId')
+        .equals(id)
+        .count()
+
+      await db.products
+        .where('categoryId')
+        .equals(id)
+        .modify((product) => {
+          delete product.categoryId
+        })
+
+      await db.categories.delete(id)
+
+      return affected
+    }
+  )
+}
+
 /* ------------------------------------------------------------------ products */
 
 export interface NewProduct {
@@ -73,6 +144,7 @@ export interface NewProduct {
   stock?: number // pieces / grams
   lowStockAt?: number
   favorite?: boolean
+  categoryId?: number
 }
 
 async function assertBarcodeFree(barcode: string | undefined, selfId?: number) {
@@ -103,6 +175,7 @@ export async function createProduct(input: NewProduct): Promise<number> {
       favorite: input.favorite ?? false,
       archived: false,
       createdAt: Date.now(),
+      categoryId: input.categoryId,
     })
     if (stock !== 0) {
       await db.stockMovements.add({
@@ -121,7 +194,7 @@ export async function createProduct(input: NewProduct): Promise<number> {
 export async function updateProduct(
   id: number,
   changes: Partial<
-    Pick<Product, 'name' | 'barcode' | 'cost' | 'price' | 'lowStockAt' | 'favorite' | 'archived'>
+    Pick<Product, 'name' | 'barcode' | 'cost' | 'price' | 'lowStockAt' | 'favorite' | 'archived' | 'categoryId' >
   >,
 ): Promise<void> {
   if (changes.name !== undefined && !changes.name.trim()) throw new PosError('Product name is required')

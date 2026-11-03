@@ -1,11 +1,20 @@
 import { useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
-import { db, type Product, type ProductPack, type UnitType } from '../db/db'
+import {
+  db,
+  type Product,
+  type ProductPack,
+  type UnitType,
+  type Category,
+} from '../db/db'
 import {
   adjustStock,
+  createCategory,
   createPack,
   createProduct,
+  deleteCategory,
   deletePack,
+  renameCategory,
   restock,
   restockPack,
   updateProduct,
@@ -18,6 +27,13 @@ import { Field, PageHeader, Segmented, Sheet, btn, inputCls, useToast } from '..
 
 export function Products() {
   const products = useLiveQuery(() => db.products.toArray(), [])
+  const categories = useLiveQuery(
+      () => db.categories.orderBy('sortOrder').toArray(),
+      []
+    )
+
+  const [showCategories, setShowCategories] = useState(false)
+  const [categoryFilter, setCategoryFilter] = useState<number | 'all' | 'uncategorized' >('all')
   const [query, setQuery] = useState('')
   const [showArchived, setShowArchived] = useState(false)
   const [editing, setEditing] = useState<Product | 'new' | null>(null)
@@ -26,12 +42,26 @@ export function Products() {
   const q = query.trim().toLowerCase()
   const list = (products ?? [])
     .filter((p) => p.archived === showArchived)
+
+    // Search products
     .filter(
       (p) =>
         !q ||
         p.name.toLowerCase().includes(q) ||
-        (!!p.barcode && barcodeKey(p.barcode) === barcodeKey(query)),
+        (!!p.barcode && barcodeKey(p.barcode) === barcodeKey(query))
     )
+
+    // Filter by category
+    .filter((p) => {
+      if (categoryFilter === 'all') return true
+
+      if (categoryFilter === 'uncategorized') {
+        return !p.categoryId
+      }
+
+      return p.categoryId === categoryFilter
+    })
+
     .sort((a, b) => a.name.localeCompare(b.name))
 
   return (
@@ -39,9 +69,21 @@ export function Products() {
       <PageHeader
         title="Products"
         right={
-          <button className={`${btn.primary} py-2`} onClick={() => setEditing('new')}>
-            + Add
-          </button>
+          <div className="flex gap-2">
+            <button
+              className={`${btn.secondary} py-2`}
+              onClick={() => setShowCategories(true)}
+            >
+              Categories
+            </button>
+
+            <button
+              className={`${btn.primary} py-2`}
+              onClick={() => setEditing('new')}
+            >
+              + Add
+            </button>
+          </div>
         }
       />
       <div className="space-y-2 px-4 pt-3">
@@ -53,6 +95,37 @@ export function Products() {
           className={inputCls}
           aria-label="Search products"
         />
+        {categories && (
+          <div className="flex gap-2 overflow-x-auto pb-2">
+            <button
+              className={categoryFilter === 'all' ? btn.primary : btn.chip}
+              onClick={() => setCategoryFilter('all')}
+            >
+              All
+            </button>
+
+            <button
+              className={
+                categoryFilter === 'uncategorized' ? btn.primary : btn.chip
+              }
+              onClick={() => setCategoryFilter('uncategorized')}
+            >
+              Uncategorized
+            </button>
+
+            {categories.map((category) => (
+              <button
+                key={category.id}
+                className={
+                  categoryFilter === category.id ? btn.primary : btn.chip
+                }
+                onClick={() => setCategoryFilter(category.id)}
+              >
+                {category.name}
+              </button>
+            ))}
+          </div>
+        )}
         <label className="flex items-center gap-2 text-sm text-slate-600">
           <input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} />
           Show archived (hidden from Sell)
@@ -74,6 +147,9 @@ export function Products() {
                   {p.favorite && <span className="mr-1 text-amber-500">★</span>}
                   {p.name}
                 </div>
+                <div className="text-xs text-slate-400">
+                  {categories?.find((c) => c.id === p.categoryId)?.name ?? 'Uncategorized'}
+                </div>
                 <div className="text-sm text-slate-500">
                   {formatPrice(p.price, p.unitType)} ·{' '}
                   <span className={p.stock <= 0 ? 'text-red-600' : p.stock <= p.lowStockAt ? 'text-amber-600' : ''}>
@@ -93,6 +169,11 @@ export function Products() {
 
       {editing && <ProductSheet product={editing === 'new' ? null : editing} onClose={() => setEditing(null)} />}
       {restocking && <RestockSheet product={restocking} onClose={() => setRestocking(null)} />}
+      {showCategories && (
+        <CategoryManager
+          onClose={() => setShowCategories(false)}
+        />
+      )}
     </div>
   )
 }
@@ -101,6 +182,14 @@ export function Products() {
 
 function ProductSheet({ product, onClose }: { product: Product | null; onClose: () => void }) {
   const toast = useToast()
+  const categories = useLiveQuery(
+    () => db.categories.orderBy('sortOrder').toArray(),
+    []
+  )
+
+  const [categoryId, setCategoryId] = useState(
+    product?.categoryId ? String(product.categoryId) : ''
+  )
   const isNew = product === null
   const [name, setName] = useState(product?.name ?? '')
   const [barcode, setBarcode] = useState(product?.barcode ?? '')
@@ -123,10 +212,26 @@ function ProductSheet({ product, onClose }: { product: Product | null; onClose: 
     const res = await toast.run(async () => {
       if (isNew) {
         await createProduct({
-          name, barcode, unitType, price: priceC, cost: costC, stock: stockU, lowStockAt: lowU, favorite,
+          name,
+          barcode,
+          unitType,
+          price: priceC,
+          cost: costC,
+          stock: stockU,
+          lowStockAt: lowU,
+          favorite,
+          categoryId: categoryId ? Number(categoryId) : undefined,
         })
       } else {
-        await updateProduct(product.id, { name, barcode, price: priceC, cost: costC, lowStockAt: lowU, favorite })
+        await updateProduct(product.id, {
+          name,
+          barcode,
+          price: priceC,
+          cost: costC,
+          lowStockAt: lowU,
+          favorite,
+          categoryId: categoryId ? Number(categoryId) : undefined,
+        })
       }
     }, 'Saved')
     if (res.ok) onClose()
@@ -167,6 +272,21 @@ function ProductSheet({ product, onClose }: { product: Product | null; onClose: 
               { value: 'weight', label: 'By weight (kg)' },
             ]}
           />
+        </Field>
+        <Field label="Category">
+          <select
+            value={categoryId}
+            onChange={(e) => setCategoryId(e.target.value)}
+            className={inputCls}
+          >
+            <option value="">Uncategorized</option>
+
+            {categories?.map((category) => (
+              <option key={category.id} value={category.id}>
+                {category.name}
+              </option>
+            ))}
+          </select>
         </Field>
         <div className="grid grid-cols-2 gap-3">
           <Field label={`Selling price per ${unitWord} (₱)`}>
@@ -403,6 +523,165 @@ function RestockSheet({ product, onClose }: { product: Product; onClose: () => v
             <input inputMode="decimal" value={newCost} onChange={(e) => setNewCost(e.target.value)} className={inputCls} />
           </Field>
         )}
+      </div>
+    </Sheet>
+  )
+}
+
+/* ------------------------------------------------------- category management */
+
+function CategoryManager({ onClose }: { onClose: () => void }) {
+  const toast = useToast()
+
+  const categories = useLiveQuery(
+    () => db.categories.orderBy('sortOrder').toArray(),
+    []
+  )
+
+  const [name, setName] = useState('')
+  const [editingId, setEditingId] = useState<number | null>(null)
+
+  function resetForm() {
+    setName('')
+    setEditingId(null)
+  }
+
+  async function saveCategory() {
+    if (!name.trim()) return
+
+    const res = await toast.run(
+      async () => {
+        if (editingId !== null) {
+          await renameCategory(editingId, name)
+        } else {
+          await createCategory(name)
+        }
+      },
+      editingId !== null ? 'Category updated' : 'Category added'
+    )
+
+    if (res.ok) {
+      resetForm()
+    }
+  }
+
+  async function removeCategory(category: Category) {
+    const affected = await db.products
+      .where('categoryId')
+      .equals(category.id)
+      .count()
+
+    const confirmed = window.confirm(
+      `Delete "${category.name}"?\n\n${affected} product(s) will become Uncategorized. Your products and sales records will not be deleted.`
+    )
+
+    if (!confirmed) return
+
+    await toast.run(
+      () => deleteCategory(category.id),
+      `${affected} product(s) moved to Uncategorized`
+    )
+
+    if (editingId === category.id) {
+      resetForm()
+    }
+  }
+
+  return (
+    <Sheet
+      title="Manage categories"
+      onClose={onClose}
+    >
+      <div className="space-y-4">
+
+        <div className="rounded-xl border border-slate-200 p-3">
+          <h3 className="mb-3 font-semibold">
+            {editingId !== null ? 'Rename category' : 'Add new category'}
+          </h3>
+
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="Enter category name"
+            className={inputCls}
+            autoFocus
+          />
+
+          <div className="mt-2 flex gap-2">
+
+            <button
+              className={`${btn.primary} flex-1`}
+              disabled={!name.trim()}
+              onClick={saveCategory}
+            >
+              {editingId !== null ? 'Save changes' : 'Add category'}
+            </button>
+
+            {editingId !== null && (
+              <button
+                className={btn.secondary}
+                onClick={resetForm}
+              >
+                Cancel
+              </button>
+            )}
+
+          </div>
+        </div>
+
+        <div>
+          <h3 className="mb-2 font-semibold">
+            Existing categories
+          </h3>
+
+          {!categories ? (
+            <p className="text-sm text-slate-500">
+              Loading categories...
+            </p>
+          ) : categories.length === 0 ? (
+            <p className="text-sm text-slate-500">
+              No categories created yet.
+            </p>
+          ) : (
+            <div className="divide-y divide-slate-100">
+
+              {categories.map((category) => (
+                <div
+                  key={category.id}
+                  className="flex items-center justify-between gap-2 py-3"
+                >
+
+                  <span className="font-medium">
+                    {category.name}
+                  </span>
+
+                  <div className="flex gap-2">
+
+                    <button
+                      className={btn.chip}
+                      onClick={() => {
+                        setEditingId(category.id)
+                        setName(category.name)
+                      }}
+                    >
+                      Rename
+                    </button>
+
+                    <button
+                      className="rounded-lg px-3 py-2 text-sm text-red-600 hover:bg-red-50"
+                      onClick={() => removeCategory(category)}
+                    >
+                      Delete
+                    </button>
+
+                  </div>
+                </div>
+              ))}
+
+            </div>
+          )}
+        </div>
+
       </div>
     </Sheet>
   )

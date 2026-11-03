@@ -12,6 +12,12 @@ export type PayMethod = 'cash' | 'gcash' | 'maya' | 'utang'
 export type WalletProvider = 'gcash' | 'maya'
 export type WalletType = 'cash_in' | 'cash_out'
 
+export interface Category {
+  id: number
+  name: string
+  sortOrder: number
+}
+
 export interface Product {
   id: number
   name: string
@@ -24,6 +30,7 @@ export interface Product {
   favorite: boolean
   archived: boolean
   createdAt: number
+  categoryId?: number
 }
 
 /** A way to buy/sell in bulk: "Box of 24", "Sack 25 kg". unitsPerPack is pieces or grams. */
@@ -133,6 +140,7 @@ class TindahanDB extends Dexie {
   stockMovements!: EntityTable<StockMovement, 'id'>
   walletTransactions!: EntityTable<WalletTransaction, 'id'>
   settings!: EntityTable<Setting, 'key'>
+  categories!: EntityTable<Category, 'id'>
 
   constructor() {
     super('tindahan')
@@ -154,6 +162,11 @@ class TindahanDB extends Dexie {
       walletTransactions: '++id, createdAt, kind, voidOf, reference',
       settings: 'key',
     })
+    // v3: add categorization reference
+    this.version(3).stores({
+      categories: '++id, name, sortOrder',
+      products: '++id, name, barcode, categoryId', // restate ALL indexes when you change a table
+    })
   }
 }
 
@@ -169,7 +182,8 @@ export const ALL_TABLES = [
   'stockMovements',
   'walletTransactions',
   'settings',
+  'categories',
 ] as const
 
 /** Tables that backups made by version 1 of the app do not contain. */
-export const OPTIONAL_BACKUP_TABLES: readonly (typeof ALL_TABLES)[number][] = ['walletTransactions', 'settings']
+export const OPTIONAL_BACKUP_TABLES: readonly (typeof ALL_TABLES)[number][] = ['walletTransactions', 'settings', 'categories']

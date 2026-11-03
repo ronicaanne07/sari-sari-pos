@@ -46,21 +46,63 @@ export function Sell({ cart, setCart }: { cart: CartLine[]; setCart: SetCart }) 
   const [scanning, setScanning] = useState(false)
   const toast = useToast()
 
+  const categories = useLiveQuery(() => db.categories.orderBy('sortOrder').toArray(), [])
+  const [categoryId, setCategoryId] = useState<number | 'all' | 'none'>('all')
+
+  
   const tiles = useMemo<Tile[]>(() => {
     if (!products) return []
+
     const q = query.trim().toLowerCase()
+
     const packsByProduct = new Map<number, ProductPack[]>()
+
     for (const k of packs ?? []) {
-      packsByProduct.set(k.productId, [...(packsByProduct.get(k.productId) ?? []), k])
+      packsByProduct.set(k.productId, [
+        ...(packsByProduct.get(k.productId) ?? []),
+        k,
+      ])
     }
+
     return products
-      .filter((p) => !p.archived && (!q || p.name.toLowerCase().includes(q) || p.barcode === query.trim()))
-      .sort((a, b) => Number(b.favorite) - Number(a.favorite) || a.name.localeCompare(b.name))
+      .filter((p) => {
+        // Exclude archived products
+        if (p.archived) return false
+
+        // Apply category filter
+        if (categoryId === 'none' && p.categoryId != null) return false
+
+        if (
+          typeof categoryId === 'number' &&
+          p.categoryId !== categoryId
+        ) return false
+
+        // Apply search filter
+        if (
+          q &&
+          !p.name.toLowerCase().includes(q) &&
+          p.barcode !== query.trim()
+        ) return false
+
+        return true
+      })
+      .sort(
+        (a, b) =>
+          Number(b.favorite) - Number(a.favorite) ||
+          a.name.localeCompare(b.name)
+      )
       .flatMap((p): Tile[] => [
         { key: `p${p.id}`, product: p },
-        ...(packsByProduct.get(p.id) ?? []).map((k): Tile => ({ key: `k${k.id}`, product: p, pack: k })),
+        ...(packsByProduct.get(p.id) ?? []).map(
+          (k): Tile => ({
+            key: `k${k.id}`,
+            product: p,
+            pack: k,
+          })
+        ),
       ])
-  }, [products, packs, query])
+  }, [products, packs, query, categoryId])
+
 
   function tapProduct(p: Product) {
     navigator.vibrate?.(10)
@@ -125,6 +167,36 @@ export function Sell({ cart, setCart }: { cart: CartLine[]; setCart: SetCart }) 
           📷 Scan
         </button>
       </form>
+
+      <div className="flex gap-2 overflow-x-auto px-4 pt-3">
+        <button
+          type="button"
+          className={categoryId === 'all' ? btn.primary : btn.chip}
+          onClick={() => setCategoryId('all')}
+        >
+          All
+        </button>
+
+        <button
+          type="button"
+          className={categoryId === 'none' ? btn.primary : btn.chip}
+          onClick={() => setCategoryId('none')}
+        >
+          Uncategorized
+        </button>
+
+        {categories?.map((c) => (
+          <button
+            key={c.id}
+            type="button"
+            className={categoryId === c.id ? btn.primary : btn.chip}
+            onClick={() => setCategoryId(c.id)}
+          >
+            {c.name}
+          </button>
+        ))}
+      </div>
+
 
       {!products ? (
         <p className="p-6 text-center text-slate-500">Loading…</p>
