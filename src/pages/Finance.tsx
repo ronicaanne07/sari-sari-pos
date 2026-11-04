@@ -21,7 +21,7 @@ export function Finance() {
   async function save(e: React.FormEvent) {
     e.preventDefault()
     const cents = toCentavos(amount)
-    if (!Number.isInteger(cents) || cents <= 0) { toast.show('Enter a valid amount'); return }
+    if (cents === null || cents <= 0) { toast.show('Enter a valid amount', 'error'); return }
     await toast.run(async () => {
       if (mode === 'expense') {
         await db.expenses.add({ createdAt: Date.now(), category: category.trim() || 'Other', amount: cents, paymentMethod: method, note: note.trim() || undefined })

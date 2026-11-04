@@ -130,6 +130,35 @@ export interface StockMovement {
   note?: string
 }
 
+export type ExpenseMethod = 'cash' | 'gcash' | 'maya' | 'bank' | 'other'
+
+/** Money the store spends that is not stock: electricity, salary, transport... */
+export interface Expense {
+  id: number
+  createdAt: number
+  category: string
+  amount: number // centavos
+  paymentMethod: ExpenseMethod
+  note?: string
+}
+
+export interface PurchaseItem {
+  productId?: number
+  name: string
+  qty: number // pieces or grams, same units as stock
+  cost: number // centavos for the whole line
+}
+
+/** Stock bought from a supplier. `items` stays empty until you record line items. */
+export interface Purchase {
+  id: number
+  createdAt: number
+  supplier?: string
+  totalCost: number // centavos
+  items: PurchaseItem[]
+  note?: string
+}
+
 class TindahanDB extends Dexie {
   products!: EntityTable<Product, 'id'>
   productPacks!: EntityTable<ProductPack, 'id'>
@@ -141,6 +170,8 @@ class TindahanDB extends Dexie {
   walletTransactions!: EntityTable<WalletTransaction, 'id'>
   settings!: EntityTable<Setting, 'key'>
   categories!: EntityTable<Category, 'id'>
+  purchases!: EntityTable<Purchase, 'id'>
+  expenses!: EntityTable<Expense, 'id'>
 
   constructor() {
     super('tindahan')
@@ -167,6 +198,12 @@ class TindahanDB extends Dexie {
       categories: '++id, name, sortOrder',
       products: '++id, name, barcode, categoryId', // restate ALL indexes when you change a table
     })
+    // v4: purchases and expenses (Finance page). createdAt MUST be indexed because the page
+    // sorts with orderBy('createdAt'); without the index Dexie throws a SchemaError at runtime.
+    this.version(4).stores({
+      purchases: '++id, createdAt',
+      expenses: '++id, createdAt',
+    })
   }
 }
 
@@ -183,7 +220,15 @@ export const ALL_TABLES = [
   'walletTransactions',
   'settings',
   'categories',
+  'purchases',
+  'expenses',
 ] as const
 
 /** Tables that backups made by version 1 of the app do not contain. */
-export const OPTIONAL_BACKUP_TABLES: readonly (typeof ALL_TABLES)[number][] = ['walletTransactions', 'settings', 'categories']
+export const OPTIONAL_BACKUP_TABLES: readonly (typeof ALL_TABLES)[number][] = [
+  'walletTransactions',
+  'settings',
+  'categories',
+  'purchases',
+  'expenses',
+]
