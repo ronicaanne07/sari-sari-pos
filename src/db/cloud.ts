@@ -189,3 +189,25 @@ export function startAutoCloudBackup(everyMs = 15 * 60 * 1000) {
   setInterval(run, Math.min(everyMs, 5 * 60 * 1000))
   run()
 }
+
+/* ---------- "this is the store phone" switch ---------- */
+
+const STORE_PHONE = 'isStorePhone'
+
+export function isStorePhone() {
+  return localStorage.getItem(STORE_PHONE) === '1'
+}
+
+export function setStorePhone(on: boolean) {
+  if (on) {
+    localStorage.setItem(STORE_PHONE, '1')
+    startAutoCloudBackup()
+  } else {
+    localStorage.removeItem(STORE_PHONE) // takes effect fully after the app is reopened
+  }
+}
+
+/** Call once when the app starts (main.tsx). Does nothing unless this device was marked as the store phone. */
+export function resumeAutoCloudBackup() {
+  if (isStorePhone()) startAutoCloudBackup()
+}

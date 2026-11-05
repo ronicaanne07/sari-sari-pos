@@ -1,9 +1,20 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db, type PayMethod } from '../db/db'
 import { dayRange, lowStockProducts, summaryBetween, voidSale } from '../db/actions'
 import { exportBackup, importBackup, resetAllData } from '../db/backup'
 import { seedSampleProducts } from '../db/seed'
+import {
+  cloudConfigured,
+  cloudSignIn,
+  cloudSignOut,
+  cloudSignedIn,
+  downloadCloudBackup,
+  isStorePhone,
+  lastCloudBackup,
+  setStorePhone,
+  uploadCloudBackup,
+} from '../db/cloud'
 import { formatPeso, toCentavos } from '../lib/money'
 import { formatStock, pesoToInput } from '../lib/units'
 import { saveSettings, useSettings } from '../db/settings'
@@ -167,6 +178,7 @@ export function Summary() {
         )}
       </section>
 
+      <CloudSection />
       <DataSection />
       {settingsOpen && <SettingsSheet onClose={() => setSettingsOpen(false)} />}
     </div>
@@ -258,6 +270,148 @@ function Stat({ label, value, hint, big }: { label: string; value: string; hint?
   )
 }
 
+/** Online backup to your own Supabase project. Needs the owner's login. */
+function CloudSection() {
+  const toast = useToast()
+  const [signedIn, setSignedIn] = useState(cloudSignedIn())
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [storePhone, setStorePhoneState] = useState(isStorePhone())
+  const [tick, setTick] = useState(0)
+  const [conflict, setConflict] = useState(false)
+
+  // refresh "last backup" while this screen is open (automatic backups update it in the background)
+  useEffect(() => {
+    const t = setInterval(() => setTick((n) => n + 1), 5000)
+    return () => clearInterval(t)
+  }, [])
+  void tick
+  const { at, error } = lastCloudBackup()
+
+  if (!cloudConfigured()) {
+    return (
+      <section className="m-4 space-y-1 rounded-2xl border border-slate-200 bg-white p-3">
+        <h3 className="font-semibold">Online backup</h3>
+        <p className="text-sm text-slate-500">
+          Not set up. Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY, then rebuild (see CLOUD_SETUP.md).
+        </p>
+      </section>
+    )
+  }
+
+  /** toast.run hides ordinary errors behind "Something went wrong", so show the real cloud message. */
+  async function attempt(fn: () => Promise<unknown>, okMessage: string): Promise<boolean> {
+    try {
+      await fn()
+      toast.show(okMessage)
+      return true
+    } catch (e) {
+      toast.show(e instanceof Error ? e.message : String(e), 'error')
+      return false
+    }
+  }
+
+  async function onSignIn(e: React.FormEvent) {
+    e.preventDefault()
+    if (await attempt(() => cloudSignIn(email, password), 'Signed in')) {
+      setPassword('')
+      setSignedIn(true)
+    }
+  }
+
+  async function onUpload(force: boolean) {
+    setConflict(false)
+    try {
+      await uploadCloudBackup(force)
+      toast.show('Backed up online')
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      if (/another device/.test(msg)) setConflict(true)
+      toast.show(msg, 'error')
+    }
+    setTick((n) => n + 1)
+  }
+
+  async function onDownload() {
+    if (!window.confirm('This replaces ALL data on this device with the online backup. Continue?')) return
+    await attempt(downloadCloudBackup, 'Restored from the online backup')
+  }
+
+  return (
+    <section className="m-4 space-y-2 rounded-2xl border border-slate-200 bg-white p-3">
+      <h3 className="font-semibold">Online backup</h3>
+      {!signedIn ? (
+        <form onSubmit={onSignIn} className="space-y-2">
+          <p className="text-sm text-slate-500">Sign in with the owner account you created in Supabase.</p>
+          <input
+            type="email"
+            autoComplete="username"
+            placeholder="Email"
+            value={email}
+            onChange={(e) => setEmail(e.target.value)}
+            className={inputCls}
+          />
+          <input
+            type="password"
+            autoComplete="current-password"
+            placeholder="Password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            className={inputCls}
+          />
+          <button className={`${btn.primary} w-full`} type="submit" disabled={!email || !password}>
+            Sign in
+          </button>
+        </form>
+      ) : (
+        <>
+          <p className="text-sm text-slate-500">
+            {at ? `Last online backup: ${formatDateTime(Date.parse(at))}` : 'No online backup from this device yet.'}
+          </p>
+          {error && <p className="text-sm text-red-600">Last automatic backup failed: {error}</p>}
+          <button className={`${btn.primary} w-full`} onClick={() => onUpload(false)}>
+            Back up now
+          </button>
+          {conflict && (
+            <button className={`${btn.secondary} w-full`} onClick={() => onUpload(true)}>
+              Upload anyway (this device has the right data)
+            </button>
+          )}
+          <button className={`${btn.secondary} w-full`} onClick={onDownload}>
+            Restore from online backup
+          </button>
+          <label className="flex items-start gap-2 pt-1">
+            <input
+              type="checkbox"
+              className="mt-1"
+              checked={storePhone}
+              onChange={(e) => {
+                setStorePhone(e.target.checked)
+                setStorePhoneState(e.target.checked)
+              }}
+            />
+            <span className="text-sm">
+              This is the store phone: back up automatically.
+              <span className="block text-xs text-slate-500">
+                Turn this on only on the phone that makes the sales, never on a device you only use to look at data.
+              </span>
+            </span>
+          </label>
+          <button
+            className={`${btn.secondary} w-full`}
+            onClick={() => {
+              cloudSignOut()
+              setSignedIn(false)
+            }}
+          >
+            Sign out
+          </button>
+        </>
+      )}
+    </section>
+  )
+}
+
 /** Backup, restore and reset. Until cloud sync exists, a backup file is the only copy of the data. */
 function DataSection() {
   const toast = useToast()
@@ -293,7 +447,7 @@ function DataSection() {
     <section className="m-4 mt-8 space-y-2 rounded-2xl border border-slate-200 bg-white p-3">
       <h3 className="font-semibold">Your data</h3>
       <p className="text-sm text-slate-500">
-        Everything is stored on this phone. Download a backup regularly: if the phone is lost, the backup is the only copy.
+        Everything is stored on this phone. Download a backup file now and then, in addition to the online backup.
       </p>
       <button className={`${btn.secondary} w-full`} onClick={onExport}>
         Download backup
