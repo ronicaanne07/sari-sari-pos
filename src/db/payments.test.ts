@@ -197,7 +197,7 @@ describe('backup with the new tables', () => {
       provider: 'gcash', type: 'cash_out', amount: 20000, fee: 500, reference: 'BK-0001',
     })
     const backup = JSON.parse(JSON.stringify(await exportBackup()))
-    expect(backup.version).toBe(2)
+    expect(backup.version).toBe(4)
     await resetAllData()
     await importBackup(backup)
     expect((await db.walletTransactions.get(tx.id))!.reference).toBe('BK-0001')

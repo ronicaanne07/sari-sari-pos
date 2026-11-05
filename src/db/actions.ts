@@ -62,77 +62,6 @@ async function assertReferenceFree(provider: WalletProvider, reference: string):
   }
 }
 
-
-/* ------------------------------------------------------------------ Categories */
-export async function createCategory(name: string): Promise<number> {
-  const n = name.trim()
-  if (!n) throw new PosError('Category name is required')
-  const all = await db.categories.toArray()
-  if (all.some((c) => c.name.toLowerCase() === n.toLowerCase())) {
-    throw new PosError('That category already exists')
-  }
-  return db.categories.add({ name: n, sortOrder: all.length })
-}
-
-export async function renameCategory(
-  id: number,
-  name: string
-): Promise<void> {
-  const n = name.trim()
-
-  if (!n) {
-    throw new PosError('Category name is required')
-  }
-
-  const existing = await db.categories.toArray()
-
-  if (
-    existing.some(
-      (c) => c.id !== id && c.name.toLowerCase() === n.toLowerCase()
-    )
-  ) {
-    throw new PosError('That category already exists')
-  }
-
-  const category = await db.categories.get(id)
-
-  if (!category) {
-    throw new PosError('Category not found')
-  }
-
-  await db.categories.update(id, { name: n })
-}
-
-export async function deleteCategory(id: number): Promise<number> {
-  return db.transaction(
-    'rw',
-    [db.categories, db.products],
-    async () => {
-      const category = await db.categories.get(id)
-
-      if (!category) {
-        throw new PosError('Category not found')
-      }
-
-      const affected = await db.products
-        .where('categoryId')
-        .equals(id)
-        .count()
-
-      await db.products
-        .where('categoryId')
-        .equals(id)
-        .modify((product) => {
-          delete product.categoryId
-        })
-
-      await db.categories.delete(id)
-
-      return affected
-    }
-  )
-}
-
 /* ------------------------------------------------------------------ products */
 
 export interface NewProduct {
@@ -162,8 +91,9 @@ export async function createProduct(input: NewProduct): Promise<number> {
   assertInt(stock, 'Stock', { min: Number.MIN_SAFE_INTEGER })
   const barcode = input.barcode?.trim() || undefined
 
-  return db.transaction('rw', [db.products, db.stockMovements], async () => {
+  return db.transaction('rw', [db.products, db.stockMovements, db.categories], async () => {
     await assertBarcodeFree(barcode)
+    await assertCategoryExists(input.categoryId)
     const id = await db.products.add({
       name,
       barcode,
@@ -173,9 +103,9 @@ export async function createProduct(input: NewProduct): Promise<number> {
       stock,
       lowStockAt: input.lowStockAt ?? 0,
       favorite: input.favorite ?? false,
+      categoryId: input.categoryId,
       archived: false,
       createdAt: Date.now(),
-      categoryId: input.categoryId,
     })
     if (stock !== 0) {
       await db.stockMovements.add({
@@ -194,16 +124,65 @@ export async function createProduct(input: NewProduct): Promise<number> {
 export async function updateProduct(
   id: number,
   changes: Partial<
-    Pick<Product, 'name' | 'barcode' | 'cost' | 'price' | 'lowStockAt' | 'favorite' | 'archived' | 'categoryId' >
+    Pick<Product, 'name' | 'barcode' | 'cost' | 'price' | 'lowStockAt' | 'favorite' | 'archived' | 'categoryId'>
   >,
 ): Promise<void> {
   if (changes.name !== undefined && !changes.name.trim()) throw new PosError('Product name is required')
   if (changes.price !== undefined) assertInt(changes.price, 'Price')
   if (changes.cost !== undefined) assertInt(changes.cost, 'Cost')
   if (changes.barcode !== undefined) changes = { ...changes, barcode: changes.barcode.trim() || undefined }
-  await db.transaction('rw', db.products, async () => {
+  await db.transaction('rw', [db.products, db.categories], async () => {
     if (changes.barcode) await assertBarcodeFree(changes.barcode, id)
+    // 'categoryId' in changes: an explicit undefined means "remove the category"
+    if ('categoryId' in changes) await assertCategoryExists(changes.categoryId)
     await db.products.update(id, changes)
+  })
+}
+
+/* ---------------------------------------------------------------- categories */
+
+async function assertCategoryExists(categoryId: number | undefined): Promise<void> {
+  if (categoryId !== undefined && !(await db.categories.get(categoryId))) {
+    throw new PosError('That category no longer exists')
+  }
+}
+
+async function assertCategoryNameFree(name: string, selfId?: number): Promise<void> {
+  const taken = (await db.categories.toArray()).find(
+    (c) => c.id !== selfId && c.name.toLowerCase() === name.toLowerCase(),
+  )
+  if (taken) throw new PosError(`"${taken.name}" already exists`)
+}
+
+export async function createCategory(name: string): Promise<number> {
+  const n = name.trim()
+  if (!n) throw new PosError('Category name is required')
+  return db.transaction('rw', db.categories, async () => {
+    await assertCategoryNameFree(n)
+    return db.categories.add({ name: n, sortOrder: await db.categories.count() })
+  })
+}
+
+export async function renameCategory(id: number, name: string): Promise<void> {
+  const n = name.trim()
+  if (!n) throw new PosError('Category name is required')
+  await db.transaction('rw', db.categories, async () => {
+    await assertCategoryNameFree(n, id)
+    await db.categories.update(id, { name: n })
+  })
+}
+
+/** Products in the deleted category become Uncategorized. Nothing else is lost. */
+export async function deleteCategory(id: number): Promise<number> {
+  return db.transaction('rw', [db.categories, db.products], async () => {
+    const moved = await db.products
+      .where('categoryId')
+      .equals(id)
+      .modify((p) => {
+        delete p.categoryId
+      })
+    await db.categories.delete(id)
+    return moved
   })
 }
 

@@ -5,7 +5,7 @@ type TableName = (typeof ALL_TABLES)[number]
 
 export interface BackupFile {
   app: 'tindahan-pos'
-  version: 1 | 2 | 3
+  version: 1 | 2 | 3 | 4 // 1 = before wallet/settings, 2 = before categories, 3 = before finance
   exportedAt: number
   tables: Partial<Record<TableName, unknown[]>>
 }
@@ -13,7 +13,7 @@ export interface BackupFile {
 export async function exportBackup(): Promise<BackupFile> {
   const tables: BackupFile['tables'] = {}
   for (const name of ALL_TABLES) tables[name] = await db[name].toArray()
-  return { app: 'tindahan-pos', version: 3, exportedAt: Date.now(), tables }
+  return { app: 'tindahan-pos', version: 4, exportedAt: Date.now(), tables }
 }
 
 /**
@@ -22,7 +22,7 @@ export async function exportBackup(): Promise<BackupFile> {
  */
 export async function importBackup(raw: unknown): Promise<void> {
   const file = raw as Partial<BackupFile> | null
-  if (!file || file.app !== 'tindahan-pos' || (file.version !== 1 && file.version !== 2 && file.version !== 3) || !file.tables) {
+  if (!file || file.app !== 'tindahan-pos' || ![1, 2, 3, 4].includes(file.version as number) || !file.tables) {
     throw new PosError('This is not a Tindahan POS backup file')
   }
   const tables = file.tables
