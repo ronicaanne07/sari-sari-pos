@@ -20,12 +20,15 @@ interface Session {
   access: string
   refresh: string
   exp: number
+  userId?: string
+  email?: string
 }
 
 interface TokenResponse {
   access_token: string
   refresh_token: string
   expires_in: number
+  user?: { id: string; email?: string }
 }
 
 function readSession(): Session | null {
@@ -37,7 +40,14 @@ function readSession(): Session | null {
 }
 
 function saveSession(j: TokenResponse) {
-  const s: Session = { access: j.access_token, refresh: j.refresh_token, exp: Date.now() + (j.expires_in - 60) * 1000 }
+  const prev = readSession()
+  const s: Session = {
+    access: j.access_token,
+    refresh: j.refresh_token,
+    exp: Date.now() + (j.expires_in - 60) * 1000,
+    userId: j.user?.id ?? prev?.userId,
+    email: j.user?.email ?? prev?.email,
+  }
   localStorage.setItem(SESSION, JSON.stringify(s))
   return s
 }
@@ -46,7 +56,17 @@ export function cloudSignedIn() {
   return readSession() !== null
 }
 
-export async function cloudSignIn(email: string, password: string): Promise<void> {
+/** Who is signed in (set at sign-in), and the project address, for the sync and account code. */
+export function cloudUser(): { userId: string; email?: string } | null {
+  const s = readSession()
+  return s?.userId ? { userId: s.userId, email: s.email } : null
+}
+export function cloudUrl(): string {
+  if (!url) throw new Error('Cloud database is not configured. Follow CLOUD_SETUP.md first.')
+  return url
+}
+
+export async function cloudSignIn(email: string, password: string): Promise<{ userId: string; email?: string }> {
   if (!url || !key) throw new Error('Cloud database is not configured. Follow CLOUD_SETUP.md first.')
   const r = await fetch(`${url}/auth/v1/token?grant_type=password`, {
     method: 'POST',
@@ -54,7 +74,9 @@ export async function cloudSignIn(email: string, password: string): Promise<void
     body: JSON.stringify({ email: email.trim(), password }),
   })
   if (!r.ok) throw new Error('Sign-in failed. Check the email and password.')
-  saveSession((await r.json()) as TokenResponse)
+  const saved = saveSession((await r.json()) as TokenResponse)
+  if (!saved.userId) throw new Error('Sign-in failed. Please try again.')
+  return { userId: saved.userId, email: saved.email }
 }
 
 export function cloudSignOut() {
@@ -77,7 +99,7 @@ async function accessToken(): Promise<string> {
   return saveSession((await r.json()) as TokenResponse).access
 }
 
-async function headers() {
+export async function authHeaders() {
   if (!url || !key) throw new Error('Cloud database is not configured. Follow CLOUD_SETUP.md first.')
   return { apikey: key, Authorization: `Bearer ${await accessToken()}`, 'Content-Type': 'application/json' }
 }
@@ -87,7 +109,7 @@ async function headers() {
 async function remoteUpdatedAt(): Promise<string | undefined> {
   const r = await fetch(
     `${url}/rest/v1/pos_snapshots?store_id=eq.${encodeURIComponent(storeId)}&select=updated_at`,
-    { headers: await headers() },
+    { headers: await authHeaders() },
   )
   if (!r.ok) throw new Error(`Cloud check failed (${r.status}): ${await r.text()}`)
   const rows = (await r.json()) as Array<{ updated_at: string }>
@@ -108,7 +130,7 @@ export async function uploadCloudBackup(force = false): Promise<void> {
   }
   const backup = await exportBackup()
   const updated_at = new Date().toISOString()
-  const h = await headers()
+  const h = await authHeaders()
 
   const response = await fetch(`${url}/rest/v1/pos_snapshots?on_conflict=store_id`, {
     method: 'POST',
@@ -146,7 +168,7 @@ export async function uploadCloudBackup(force = false): Promise<void> {
 export async function downloadCloudBackup(): Promise<void> {
   const response = await fetch(
     `${url}/rest/v1/pos_snapshots?store_id=eq.${encodeURIComponent(storeId)}&select=payload,updated_at&limit=1`,
-    { headers: await headers() },
+    { headers: await authHeaders() },
   )
   if (!response.ok) throw new Error(`Cloud download failed (${response.status}): ${await response.text()}`)
   const rows = (await response.json()) as Array<{ payload: BackupFile; updated_at: string }>

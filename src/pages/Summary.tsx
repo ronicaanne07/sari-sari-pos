@@ -4,11 +4,8 @@ import { db, type PayMethod } from '../db/db'
 import { dayRange, lowStockProducts, summaryBetween, voidSale } from '../db/actions'
 import { exportBackup, importBackup, resetAllData } from '../db/backup'
 import { seedSampleProducts } from '../db/seed'
+import { useAuth } from '../auth/AuthProvider'
 import {
-  cloudConfigured,
-  cloudSignIn,
-  cloudSignOut,
-  cloudSignedIn,
   downloadCloudBackup,
   isStorePhone,
   lastCloudBackup,
@@ -270,12 +267,13 @@ function Stat({ label, value, hint, big }: { label: string; value: string; hint?
   )
 }
 
-/** Online backup to your own Supabase project. Needs the owner's login. */
+/**
+ * A safety copy of the whole store in your own Supabase project, on top of the live sync.
+ * Only the owner reaches this screen, and the owner is always signed in when the cloud is set up.
+ */
 function CloudSection() {
   const toast = useToast()
-  const [signedIn, setSignedIn] = useState(cloudSignedIn())
-  const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
+  const { mode, profile } = useAuth()
   const [storePhone, setStorePhoneState] = useState(isStorePhone())
   const [tick, setTick] = useState(0)
   const [conflict, setConflict] = useState(false)
@@ -288,12 +286,12 @@ function CloudSection() {
   void tick
   const { at, error } = lastCloudBackup()
 
-  if (!cloudConfigured()) {
+  if (mode !== 'cloud' || !profile) {
     return (
       <section className="m-4 space-y-1 rounded-2xl border border-slate-200 bg-white p-3">
         <h3 className="font-semibold">Online backup</h3>
         <p className="text-sm text-slate-500">
-          Not set up. Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY, then rebuild (see CLOUD_SETUP.md).
+          Not set up. Add VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY, then rebuild (see SETUP_ACCOUNTS.md).
         </p>
       </section>
     )
@@ -311,19 +309,11 @@ function CloudSection() {
     }
   }
 
-  async function onSignIn(e: React.FormEvent) {
-    e.preventDefault()
-    if (await attempt(() => cloudSignIn(email, password), 'Signed in')) {
-      setPassword('')
-      setSignedIn(true)
-    }
-  }
-
   async function onUpload(force: boolean) {
     setConflict(false)
     try {
       await uploadCloudBackup(force)
-      toast.show('Backed up online')
+      toast.show('Safety copy saved online')
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
       if (/another device/.test(msg)) setConflict(true)
@@ -333,81 +323,46 @@ function CloudSection() {
   }
 
   async function onDownload() {
-    if (!window.confirm('This replaces ALL data on this device with the online backup. Continue?')) return
-    await attempt(downloadCloudBackup, 'Restored from the online backup')
+    if (!window.confirm('Restoring replaces the data on this phone with the safety copy, then shares it with the other phones. Continue?')) return
+    await attempt(downloadCloudBackup, 'Restored from the safety copy')
   }
 
   return (
     <section className="m-4 space-y-2 rounded-2xl border border-slate-200 bg-white p-3">
-      <h3 className="font-semibold">Online backup</h3>
-      {!signedIn ? (
-        <form onSubmit={onSignIn} className="space-y-2">
-          <p className="text-sm text-slate-500">Sign in with the owner account you created in Supabase.</p>
-          <input
-            type="email"
-            autoComplete="username"
-            placeholder="Email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            className={inputCls}
-          />
-          <input
-            type="password"
-            autoComplete="current-password"
-            placeholder="Password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            className={inputCls}
-          />
-          <button className={`${btn.primary} w-full`} type="submit" disabled={!email || !password}>
-            Sign in
-          </button>
-        </form>
-      ) : (
-        <>
-          <p className="text-sm text-slate-500">
-            {at ? `Last online backup: ${formatDateTime(Date.parse(at))}` : 'No online backup from this device yet.'}
-          </p>
-          {error && <p className="text-sm text-red-600">Last automatic backup failed: {error}</p>}
-          <button className={`${btn.primary} w-full`} onClick={() => onUpload(false)}>
-            Back up now
-          </button>
-          {conflict && (
-            <button className={`${btn.secondary} w-full`} onClick={() => onUpload(true)}>
-              Upload anyway (this device has the right data)
-            </button>
-          )}
-          <button className={`${btn.secondary} w-full`} onClick={onDownload}>
-            Restore from online backup
-          </button>
-          <label className="flex items-start gap-2 pt-1">
-            <input
-              type="checkbox"
-              className="mt-1"
-              checked={storePhone}
-              onChange={(e) => {
-                setStorePhone(e.target.checked)
-                setStorePhoneState(e.target.checked)
-              }}
-            />
-            <span className="text-sm">
-              This is the store phone: back up automatically.
-              <span className="block text-xs text-slate-500">
-                Turn this on only on the phone that makes the sales, never on a device you only use to look at data.
-              </span>
-            </span>
-          </label>
-          <button
-            className={`${btn.secondary} w-full`}
-            onClick={() => {
-              cloudSignOut()
-              setSignedIn(false)
-            }}
-          >
-            Sign out
-          </button>
-        </>
+      <h3 className="font-semibold">Online safety copy</h3>
+      <p className="text-sm text-slate-500">
+        All phones already share the store live. This is an extra full copy you can restore if something goes badly wrong.
+      </p>
+      <p className="text-sm text-slate-500">
+        {at ? `Last safety copy: ${formatDateTime(Date.parse(at))}` : 'No safety copy from this phone yet.'}
+      </p>
+      {error && <p className="text-sm text-red-600">Last automatic copy failed: {error}</p>}
+      <button className={`${btn.primary} w-full`} onClick={() => onUpload(false)}>
+        Save a safety copy now
+      </button>
+      {conflict && (
+        <button className={`${btn.secondary} w-full`} onClick={() => onUpload(true)}>
+          Save anyway (this phone has the right data)
+        </button>
       )}
+      <button className={`${btn.secondary} w-full`} onClick={onDownload}>
+        Restore from the safety copy
+      </button>
+      <label className="flex items-start gap-2 pt-1">
+        <input
+          type="checkbox"
+          className="mt-1"
+          checked={storePhone}
+          onChange={(e) => {
+            setStorePhone(e.target.checked)
+            setStorePhoneState(e.target.checked)
+          }}
+        />
+        <span className="text-sm">
+          Save a safety copy automatically from this phone.
+          <span className="block text-xs text-slate-500">Turn this on for one phone only, normally the owner's.</span>
+        </span>
+      </label>
     </section>
   )
 }
@@ -438,7 +393,7 @@ function DataSection() {
   }
 
   async function onReset() {
-    if (!window.confirm('Delete ALL products, sales and utang on this phone? This cannot be undone.')) return
+    if (!window.confirm('Delete ALL products, sales and utang on this phone? This phone will download the shared store again the next time it syncs.')) return
     if (!window.confirm('Really delete everything? Download a backup first if unsure.')) return
     await toast.run(resetAllData, 'All data deleted')
   }
@@ -447,7 +402,7 @@ function DataSection() {
     <section className="m-4 mt-8 space-y-2 rounded-2xl border border-slate-200 bg-white p-3">
       <h3 className="font-semibold">Your data</h3>
       <p className="text-sm text-slate-500">
-        Everything is stored on this phone. Download a backup file now and then, in addition to the online backup.
+        Each phone keeps a full copy of the store and shares it online. Download a backup file now and then as well.
       </p>
       <button className={`${btn.secondary} w-full`} onClick={onExport}>
         Download backup

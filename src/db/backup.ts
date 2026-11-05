@@ -12,7 +12,14 @@ export interface BackupFile {
 
 export async function exportBackup(): Promise<BackupFile> {
   const tables: BackupFile['tables'] = {}
-  for (const name of ALL_TABLES) tables[name] = await db[name].toArray()
+  for (const name of ALL_TABLES) {
+    // _dirty is a sync marker, not data: keep backups clean
+    tables[name] = (await db[name].toArray()).map((row) => {
+      const { _dirty, ...rest } = row as { _dirty?: number }
+      void _dirty
+      return rest
+    })
+  }
   return { app: 'tindahan-pos', version: 4, exportedAt: Date.now(), tables }
 }
 
@@ -40,7 +47,9 @@ export async function importBackup(raw: unknown): Promise<void> {
 }
 
 export async function resetAllData(): Promise<void> {
-  await db.transaction('rw', ALL_TABLES.map((n) => db[n]), async () => {
+  await db.transaction('rw', [...ALL_TABLES.map((n) => db[n]), db.tombstones, db.syncMeta], async () => {
     for (const name of ALL_TABLES) await db[name].clear()
+    await db.tombstones.clear()
+    await db.syncMeta.clear() // a wiped phone downloads the shared store again
   })
 }

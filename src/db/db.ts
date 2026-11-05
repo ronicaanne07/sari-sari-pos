@@ -1,4 +1,5 @@
 import Dexie, { type EntityTable } from 'dexie'
+import { installSyncHooks, markRemote } from './syncHooks'
 
 /**
  * Units:
@@ -13,12 +14,14 @@ export type WalletProvider = 'gcash' | 'maya'
 export type WalletType = 'cash_in' | 'cash_out'
 
 export interface Category {
+  _dirty?: number // sync marker, managed by hooks (src/db/syncHooks.ts)
   id: number
   name: string
   sortOrder: number
 }
 
 export interface Product {
+  _dirty?: number // sync marker, managed by hooks (src/db/syncHooks.ts)
   id: number
   name: string
   barcode?: string
@@ -35,6 +38,7 @@ export interface Product {
 
 /** A way to buy/sell in bulk: "Box of 24", "Sack 25 kg". unitsPerPack is pieces or grams. */
 export interface ProductPack {
+  _dirty?: number // sync marker, managed by hooks (src/db/syncHooks.ts)
   id: number
   productId: number
   name: string
@@ -48,6 +52,7 @@ export interface ProductPack {
  * pointing at the original through `voidOf`. Original rows are never edited.
  */
 export interface Sale {
+  _dirty?: number // sync marker, managed by hooks (src/db/syncHooks.ts)
   id: number
   createdAt: number
   kind: 'sale' | 'void'
@@ -63,6 +68,7 @@ export interface Sale {
 }
 
 export interface SaleItem {
+  _dirty?: number // sync marker, managed by hooks (src/db/syncHooks.ts)
   id: number
   saleId: number
   productId: number
@@ -75,6 +81,7 @@ export interface SaleItem {
 }
 
 export interface Customer {
+  _dirty?: number // sync marker, managed by hooks (src/db/syncHooks.ts)
   id: number
   name: string
   phone?: string
@@ -83,6 +90,7 @@ export interface Customer {
 
 /** Signed amount: charges are positive, payments/voids negative. Balance = sum(amount). */
 export interface CreditEntry {
+  _dirty?: number // sync marker, managed by hooks (src/db/syncHooks.ts)
   id: number
   customerId: number
   createdAt: number
@@ -103,6 +111,7 @@ export interface CreditEntry {
  *  In both cases `fee` is your earning.
  */
 export interface WalletTransaction {
+  _dirty?: number // sync marker, managed by hooks (src/db/syncHooks.ts)
   id: number
   createdAt: number
   kind: 'tx' | 'void'
@@ -116,11 +125,13 @@ export interface WalletTransaction {
 }
 
 export interface Setting {
+  _dirty?: number // sync marker, managed by hooks (src/db/syncHooks.ts)
   key: string
   value: unknown
 }
 
 export interface StockMovement {
+  _dirty?: number // sync marker, managed by hooks (src/db/syncHooks.ts)
   id: number
   productId: number
   createdAt: number
@@ -134,6 +145,7 @@ export type ExpenseMethod = 'cash' | 'gcash' | 'maya' | 'bank' | 'other'
 
 /** Money the store spends that is not stock: electricity, salary, transport... */
 export interface Expense {
+  _dirty?: number // sync marker, managed by hooks (src/db/syncHooks.ts)
   id: number
   createdAt: number
   category: string
@@ -151,12 +163,26 @@ export interface PurchaseItem {
 
 /** Stock bought from a supplier. `items` stays empty until you record line items. */
 export interface Purchase {
+  _dirty?: number // sync marker, managed by hooks (src/db/syncHooks.ts)
   id: number
   createdAt: number
   supplier?: string
   totalCost: number // centavos
   items: PurchaseItem[]
   note?: string
+}
+
+/** A row deleted on this phone that the shared store still has. Uploaded once, then removed. */
+export interface Tombstone {
+  id: number
+  tbl: string
+  rowId: string
+}
+
+/** Sync bookkeeping that stays on this phone (never uploaded, never in backups). */
+export interface SyncMeta {
+  key: string
+  value: unknown
 }
 
 class TindahanDB extends Dexie {
@@ -172,6 +198,8 @@ class TindahanDB extends Dexie {
   categories!: EntityTable<Category, 'id'>
   purchases!: EntityTable<Purchase, 'id'>
   expenses!: EntityTable<Expense, 'id'>
+  tombstones!: EntityTable<Tombstone, 'id'>
+  syncMeta!: EntityTable<SyncMeta, 'key'>
 
   constructor() {
     super('tindahan')
@@ -204,6 +232,34 @@ class TindahanDB extends Dexie {
       purchases: '++id, createdAt',
       expenses: '++id, createdAt',
     })
+    // v5: shared store for several phones. Every shared table gets a `_dirty` index (rows waiting
+    // to be uploaded), plus two local-only tables. Rows that already exist were made before sync,
+    // so they are all marked as waiting: the first sign-in uploads the whole store.
+    this.version(5)
+      .stores({
+        products: '++id, name, barcode, categoryId, _dirty',
+        productPacks: '++id, productId, _dirty',
+        sales: '++id, createdAt, kind, voidOf, customerId, reference, _dirty',
+        saleItems: '++id, saleId, productId, _dirty',
+        customers: '++id, name, _dirty',
+        creditEntries: '++id, customerId, createdAt, reference, _dirty',
+        stockMovements: '++id, productId, createdAt, refId, _dirty',
+        walletTransactions: '++id, createdAt, kind, voidOf, reference, _dirty',
+        settings: 'key, _dirty',
+        categories: '++id, name, sortOrder, _dirty',
+        purchases: '++id, createdAt, _dirty',
+        expenses: '++id, createdAt, _dirty',
+        tombstones: '++id',
+        syncMeta: 'key',
+      })
+      .upgrade(async (tx) => {
+        markRemote(tx)
+        for (const name of ALL_TABLES) {
+          await tx.table(name).toCollection().modify((r: { _dirty?: number }) => {
+            r._dirty = 1
+          })
+        }
+      })
   }
 }
 
@@ -232,3 +288,5 @@ export const OPTIONAL_BACKUP_TABLES: readonly (typeof ALL_TABLES)[number][] = [
   'purchases',
   'expenses',
 ]
+
+installSyncHooks(db, ALL_TABLES)

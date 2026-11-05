@@ -1,14 +1,15 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { CartLine } from './lib/cart'
 import { ToastProvider } from './ui'
+import { AuthProvider, useAuth } from './auth/AuthProvider'
+import { AccountBar, LockScreen, LoginScreen } from './auth/screens'
+import { tabsFor, type Tab } from './auth/permissions'
 import { ReceiptProvider } from './components/ReceiptSheet'
 import { Sell } from './pages/Sell'
 import { Products } from './pages/Products'
 import { Wallet } from './pages/Wallet'
 import { Utang } from './pages/Utang'
 import { Summary } from './pages/Summary'
-
-type Tab = 'sell' | 'products' | 'wallet' | 'utang' | 'summary'
 
 const TABS: { id: Tab; label: string; icon: string }[] = [
   { id: 'sell', label: 'Sell', icon: '🛒' },
@@ -19,23 +20,52 @@ const TABS: { id: Tab; label: string; icon: string }[] = [
 ]
 
 export default function App() {
+  return (
+    <ToastProvider>
+      <AuthProvider>
+        <Gate />
+      </AuthProvider>
+    </ToastProvider>
+  )
+}
+
+/** Sign-in first, then the PIN lock, then the app with only the tabs this person's role allows. */
+function Gate() {
+  const { signedIn, locked } = useAuth()
+  if (!signedIn) return <LoginScreen />
+  if (locked) return <LockScreen />
+  return <Shell />
+}
+
+function Shell() {
+  const { role, mode } = useAuth()
+  const allowed = tabsFor(role)
+  const tabs = TABS.filter((t) => allowed.includes(t.id))
   const [tab, setTab] = useState<Tab>('sell')
+  // If the role changes while the app is open (the owner demoted someone), leave a screen they can no longer use.
+  useEffect(() => {
+    if (!allowed.includes(tab)) setTab('sell')
+  }, [allowed, tab])
   // The cart lives here so switching tabs (e.g. to check Utang) doesn't lose a sale in progress.
   const [cart, setCart] = useState<CartLine[]>([])
 
   return (
-    <ToastProvider>
       <ReceiptProvider>
       <div className="mx-auto flex h-full max-w-xl flex-col bg-slate-50">
+        {mode === 'cloud' && <AccountBar />}
         <main className="flex-1 overflow-y-auto">
           {tab === 'sell' && <Sell cart={cart} setCart={setCart} />}
-          {tab === 'products' && <Products />}
+          {tab === 'products' && allowed.includes('products') && <Products />}
           {tab === 'wallet' && <Wallet />}
           {tab === 'utang' && <Utang />}
-          {tab === 'summary' && <Summary />}
+          {tab === 'summary' && allowed.includes('summary') && <Summary />}
         </main>
-        <nav className="safe-bottom grid grid-cols-5 border-t border-slate-200 bg-white" aria-label="Main">
-          {TABS.map((t) => (
+        <nav
+          className="safe-bottom grid border-t border-slate-200 bg-white"
+          style={{ gridTemplateColumns: `repeat(${tabs.length}, minmax(0, 1fr))` }}
+          aria-label="Main"
+        >
+          {tabs.map((t) => (
             <button
               key={t.id}
               onClick={() => setTab(t.id)}
@@ -54,6 +84,5 @@ export default function App() {
         </nav>
       </div>
       </ReceiptProvider>
-    </ToastProvider>
   )
 }

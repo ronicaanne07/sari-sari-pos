@@ -23,7 +23,7 @@ beforeEach(async () => {
   remote = undefined
   vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
     calls.push({ url, init })
-    if (url.includes('/auth/v1/token?grant_type=password')) return json({ access_token: 'tok', refresh_token: 'r', expires_in: 3600 })
+    if (url.includes('/auth/v1/token?grant_type=password')) return json({ access_token: 'tok', refresh_token: 'r', expires_in: 3600, user: { id: 'u1', email: 'me@x.com' } })
     if (url.includes('select=updated_at')) return json(remote ? [{ updated_at: remote }] : [])
     if (url.includes('select=id')) return json([{ id: 1 }, { id: 2 }])
     return json({})

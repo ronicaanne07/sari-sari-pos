@@ -174,7 +174,7 @@ export async function renameCategory(id: number, name: string): Promise<void> {
 
 /** Products in the deleted category become Uncategorized. Nothing else is lost. */
 export async function deleteCategory(id: number): Promise<number> {
-  return db.transaction('rw', [db.categories, db.products], async () => {
+  return db.transaction('rw', [db.categories, db.products, db.tombstones], async () => {
     const moved = await db.products
       .where('categoryId')
       .equals(id)
@@ -182,6 +182,7 @@ export async function deleteCategory(id: number): Promise<number> {
         delete p.categoryId
       })
     await db.categories.delete(id)
+    await db.tombstones.add({ tbl: 'categories', rowId: String(id) }) // so other phones drop it too
     return moved
   })
 }
@@ -198,7 +199,10 @@ export async function createPack(
 }
 
 export async function deletePack(packId: number): Promise<void> {
-  await db.productPacks.delete(packId)
+  await db.transaction('rw', [db.productPacks, db.tombstones], async () => {
+    await db.productPacks.delete(packId)
+    await db.tombstones.add({ tbl: 'productPacks', rowId: String(packId) })
+  })
 }
 
 /* --------------------------------------------------------------------- stock */

@@ -3,12 +3,13 @@ import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App'
 import { ensureSeeded } from './db/seed'
-import { resumeAutoCloudBackup } from './db/cloud'
+import { cloudConfigured, resumeAutoCloudBackup } from './db/cloud'
 
 async function boot() {
-  await ensureSeeded()
-  // Ask the browser not to evict our data when the phone is low on storage.
+  // With the shared online store, a new phone must download the real catalogue, not invent sample products.
+  if (!cloudConfigured()) await ensureSeeded()
   resumeAutoCloudBackup()
+  // Ask the browser not to evict our data when the phone is low on storage.
   navigator.storage?.persist?.().catch(() => {})
   createRoot(document.getElementById('root')!).render(
     <StrictMode>
