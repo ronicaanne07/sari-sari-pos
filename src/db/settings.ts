@@ -8,6 +8,8 @@ export interface Settings {
   autoReceipt: boolean // open the receipt right after each sale
   walletFeePercent: number // suggested cash-in / cash-out fee, % of amount
   walletMinFee: number // centavos
+  scanBeep: boolean // play a beep when a barcode is scanned
+  scanDelaySec: number // wait before the same barcode can be scanned again
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -17,6 +19,8 @@ export const DEFAULT_SETTINGS: Settings = {
   autoReceipt: false,
   walletFeePercent: 2,
   walletMinFee: 500,
+  scanBeep: true,
+  scanDelaySec: 2,
 }
 
 export async function getSettings(): Promise<Settings> {

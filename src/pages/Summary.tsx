@@ -5,6 +5,7 @@ import { dayRange, lowStockProducts, summaryBetween, voidSale } from '../db/acti
 import { exportBackup, importBackup, resetAllData } from '../db/backup'
 import { seedSampleProducts } from '../db/seed'
 import { useAuth } from '../auth/AuthProvider'
+import { beep, prepareBeep } from '../lib/beep'
 import {
   downloadCloudBackup,
   isStorePhone,
@@ -192,6 +193,8 @@ function SettingsSheet({ onClose }: { onClose: () => void }) {
   const [autoReceipt, setAutoReceipt] = useState(s.autoReceipt)
   const [percent, setPercent] = useState(String(s.walletFeePercent))
   const [minFee, setMinFee] = useState(pesoToInput(s.walletMinFee))
+  const [scanBeep, setScanBeep] = useState(s.scanBeep)
+  const [scanDelay, setScanDelay] = useState(String(s.scanDelaySec))
 
   const percentN = Number(percent)
   const minFeeC = toCentavos(minFee)
@@ -208,6 +211,8 @@ function SettingsSheet({ onClose }: { onClose: () => void }) {
           autoReceipt,
           walletFeePercent: percentN,
           walletMinFee: minFeeC,
+          scanBeep,
+          scanDelaySec: Number(scanDelay),
         }),
       'Settings saved',
     )
@@ -252,6 +257,33 @@ function SettingsSheet({ onClose }: { onClose: () => void }) {
         <p className="text-xs text-slate-500">
           The fee is only a suggestion. You can type a different fee on each transaction.
         </p>
+
+        <h3 className="pt-2 font-semibold">Barcode scanner</h3>
+        <label className="flex items-center gap-2">
+          <input type="checkbox" checked={scanBeep} onChange={(e) => setScanBeep(e.target.checked)} />
+          <span>Beep when a barcode is scanned</span>
+        </label>
+        <button
+          type="button"
+          className={btn.secondary}
+          onClick={() => {
+            prepareBeep()
+            beep()
+          }}
+        >
+          Test the beep
+        </button>
+        <Field
+          label="Wait before the same item can be scanned again"
+          hint="Move the item away from the camera, then scan it again after this wait. Holding one item still never adds it twice."
+        >
+          <select value={scanDelay} onChange={(e) => setScanDelay(e.target.value)} className={inputCls}>
+            <option value="1">1 second</option>
+            <option value="2">2 seconds</option>
+            <option value="3">3 seconds</option>
+            <option value="5">5 seconds</option>
+          </select>
+        </Field>
       </div>
     </Sheet>
   )

@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { createDetector } from '../lib/scanner'
+import { beep, prepareBeep } from '../lib/beep'
+import { acceptScan, createScanGate } from '../lib/scanGate'
+import { useSettings } from '../db/settings'
 import { Sheet, btn, inputCls } from '../ui'
 
 function cameraMessage(e: unknown): string {
@@ -15,7 +18,8 @@ function cameraMessage(e: unknown): string {
 /**
  * Camera barcode scanner in a bottom sheet.
  *  continuous: keep scanning after each code (Sell). Otherwise it stops after the first code.
- * The same code is ignored for 2 seconds so one item is not added five times while you hold it up.
+ * A scan beeps (Settings > Scanner), and the same code is not counted again until it has left the camera's
+ * view and the chosen delay has passed, so one item is not added five times while you hold it up.
  * A box to type the code is always shown, for dim shops, damaged labels, or a denied camera.
  */
 export function Scanner({
@@ -28,9 +32,14 @@ export function Scanner({
   title: string
   hint?: string
   continuous?: boolean
-  onDetect: (code: string) => void
+  /** Return false when the code was refused (unknown product): it then gets the error sound instead of the beep. */
+  onDetect: (code: string) => boolean | void
   onClose: () => void
 }) {
+  const settings = useSettings()
+  const settingsRef = useRef(settings)
+  settingsRef.current = settings
+
   const videoRef = useRef<HTMLVideoElement>(null)
   const onDetectRef = useRef(onDetect)
   onDetectRef.current = onDetect
@@ -40,6 +49,17 @@ export function Scanner({
   const [torchOn, setTorchOn] = useState<boolean | null>(null) // null = no torch on this camera
   const trackRef = useRef<MediaStreamTrack | null>(null)
   const [typed, setTyped] = useState('')
+
+  useEffect(() => {
+    prepareBeep() // the scanner was just opened by a tap, so the phone allows sound now
+  }, [])
+
+  /** One place for what happens after an accepted code: tell the page, then beep and buzz. */
+  function accepted(code: string) {
+    const result = onDetectRef.current(code)
+    if (settingsRef.current.scanBeep) beep(result === false ? 'error' : 'ok')
+    navigator.vibrate?.(result === false ? [60, 40, 60] : 60)
+  }
 
   useEffect(() => {
     let stopped = false
@@ -84,17 +104,13 @@ export function Scanner({
       if (stopped) return
       setState('scanning')
 
-      let last = ''
-      let lastAt = 0
+      const gate = createScanGate()
       const tick = async () => {
         if (stopped) return
         try {
           const code = await detector.detect(video)
-          if (code && !(code === last && Date.now() - lastAt < 2000)) {
-            last = code
-            lastAt = Date.now()
-            navigator.vibrate?.(60)
-            onDetectRef.current(code)
+          if (code && acceptScan(gate, code, Date.now(), settingsRef.current.scanDelaySec * 1000)) {
+            accepted(code)
             if (!continuous) return
           }
         } catch (e) {
@@ -126,7 +142,7 @@ export function Scanner({
   function submitTyped() {
     const code = typed.trim()
     if (!code) return
-    onDetect(code)
+    accepted(code)
     setTyped('')
   }
 
@@ -140,7 +156,7 @@ export function Scanner({
         </button>
       }
     >
-      <div className="space-y-3">
+      <div className="space-y-3" onPointerDown={prepareBeep}>
         {error ? (
           <p role="alert" className="rounded-xl bg-amber-50 p-3 text-sm text-amber-800">
             {error}
