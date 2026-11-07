@@ -127,6 +127,8 @@ export async function updateProduct(
     Pick<Product, 'name' | 'barcode' | 'cost' | 'price' | 'lowStockAt' | 'favorite' | 'archived' | 'categoryId'>
   >,
 ): Promise<void> {
+  // Pieces and kilos are counted in different units (pieces vs grams), so changing it would corrupt stock and prices.
+  if ('unitType' in changes) throw new PosError('Sold by cannot be changed after the product is created')
   if (changes.name !== undefined && !changes.name.trim()) throw new PosError('Product name is required')
   if (changes.price !== undefined) assertInt(changes.price, 'Price')
   if (changes.cost !== undefined) assertInt(changes.cost, 'Cost')

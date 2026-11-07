@@ -298,16 +298,25 @@ function ProductSheet({ product, onClose }: { product: Product | null; onClose: 
         <Field label="Name">
           <input value={name} onChange={(e) => setName(e.target.value)} className={inputCls} autoFocus={isNew} />
         </Field>
-        <Field label="Sold by" hint={isNew ? undefined : 'Cannot be changed after the product is created.'}>
-          <Segmented
-            value={unitType}
-            disabled={!isNew}
-            onChange={setUnitType}
-            options={[
-              { value: 'piece', label: 'Per piece' },
-              { value: 'weight', label: 'By weight (kg)' },
-            ]}
-          />
+        <Field label="Sold by" hint={isNew ? undefined : 'Fixed when the product was created. To change it, archive this product and add a new one.'}>
+          {isNew ? (
+            <Segmented
+              value={unitType}
+              onChange={setUnitType}
+              options={[
+                { value: 'piece', label: 'Per piece' },
+                { value: 'weight', label: 'By weight (kg)' },
+              ]}
+            />
+          ) : (
+            <div
+              aria-label="Sold by"
+              className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-100 px-3 py-3 text-base font-medium text-slate-700"
+            >
+              <span>{unitType === 'weight' ? 'By weight (kg)' : 'Per piece'}</span>
+              <span aria-hidden="true">🔒</span>
+            </div>
+          )}
         </Field>
         <Field label="Category">
           <select

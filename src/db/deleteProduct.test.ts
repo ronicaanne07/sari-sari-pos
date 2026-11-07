@@ -90,3 +90,12 @@ describe('deleting archived products', () => {
     expect(await db.products.count()).toBe(0)
   })
 })
+
+describe('sold-by is fixed after creation', () => {
+  it('refuses to change a product between pieces and weight', async () => {
+    const id = await make('Egg')
+    await expect(updateProduct(id, { unitType: 'weight' } as never)).rejects.toThrow(/cannot be changed/)
+    expect((await db.products.get(id))!.unitType).toBe('piece')
+    await expect(updateProduct(id, { price: 1200 })).resolves.toBeUndefined() // other edits still work
+  })
+})
