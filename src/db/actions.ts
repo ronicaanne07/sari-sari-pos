@@ -494,6 +494,34 @@ export async function addCustomer(name: string, phone?: string): Promise<number>
   return db.customers.add({ name: n, phone: phone?.trim() || undefined, createdAt: Date.now() })
 }
 
+const UNUSED_CUSTOMER_MS = 24 * 60 * 60 * 1000
+
+/**
+ * Removes customers who owe nothing, so the list does not grow forever: anyone whose utang is fully paid,
+ * and anyone added more than a day ago who never took utang. Their old sales, payments and receipts stay
+ * in the history (only the name on the receipt is lost). Returns how many were removed.
+ */
+export async function pruneSettledCustomers(now = Date.now()): Promise<number> {
+  return db.transaction('rw', [db.customers, db.creditEntries, db.tombstones], async () => {
+    const [customers, entries] = await Promise.all([db.customers.toArray(), db.creditEntries.toArray()])
+    const balance = new Map<number, number>()
+    const used = new Set<number>()
+    for (const e of entries) {
+      balance.set(e.customerId, (balance.get(e.customerId) ?? 0) + e.amount)
+      used.add(e.customerId)
+    }
+    let n = 0
+    for (const c of customers) {
+      if ((balance.get(c.id) ?? 0) !== 0) continue
+      if (!used.has(c.id) && now - c.createdAt < UNUSED_CUSTOMER_MS) continue // just added, give it time
+      await db.customers.delete(c.id)
+      await db.tombstones.add({ tbl: 'customers', rowId: String(c.id) }) // so other phones drop it too
+      n++
+    }
+    return n
+  })
+}
+
 export async function customerBalance(customerId: number): Promise<number> {
   const entries = await db.creditEntries.where('customerId').equals(customerId).toArray()
   return entries.reduce((s, e) => s + e.amount, 0)

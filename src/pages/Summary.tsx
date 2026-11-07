@@ -7,7 +7,7 @@ import { seedSampleProducts } from '../db/seed'
 import { useAuth } from '../auth/AuthProvider'
 import { beep, prepareBeep } from '../lib/beep'
 import { useMovement } from '../db/movement'
-import type { Product } from '../db/db'
+import type { Product, Sale } from '../db/db'
 import {
   downloadCloudBackup,
   isStorePhone,
@@ -20,6 +20,142 @@ import { formatStock, pesoToInput } from '../lib/units'
 import { saveSettings, useSettings } from '../db/settings'
 import { useReceipt } from '../components/ReceiptSheet'
 import { Field, PageHeader, Sheet, btn, formatDateTime, inputCls, useToast } from '../ui'
+
+const pad = (n: number) => String(n).padStart(2, '0')
+const toDateInput = (d: Date) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`
+function fromDateInput(v: string): Date | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v)
+  return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 12) : null
+}
+const timeOf = (ms: number) => new Date(ms).toLocaleTimeString('en-PH', { hour: 'numeric', minute: '2-digit' })
+
+const PAGE = 10
+
+type SaleRow = { sale: Sale; voided: boolean; names: string }
+
+/**
+ * One tidy line per sale. Tap a line for its receipt and void buttons. Shows the latest 10, and a filter
+ * by payment method, so a busy day stays readable. Everything is still there under "Show more".
+ */
+function TransactionList({
+  sales,
+  isToday,
+  onReceipt,
+  onVoid,
+}: {
+  sales: SaleRow[]
+  isToday: boolean
+  onReceipt: (saleId: number) => void
+  onVoid: (saleId: number) => void
+}) {
+  const [filter, setFilter] = useState<'all' | PayMethod>('all')
+  const [shown, setShown] = useState(PAGE)
+  const [open, setOpen] = useState<number | null>(null)
+
+  const rows = sales.filter((r) => filter === 'all' || r.sale.method === filter)
+  const visible = rows.slice(0, shown)
+  const count = sales.filter((r) => r.sale.kind === 'sale').length
+
+  return (
+    <>
+      <div className="mb-1 flex items-baseline justify-between">
+        <h3 className="font-semibold">Transactions{count ? ` (${count})` : ''}</h3>
+        {rows.length > PAGE && shown > PAGE && (
+          <button className="text-sm text-slate-500 underline" onClick={() => setShown(PAGE)}>
+            Show fewer
+          </button>
+        )}
+      </div>
+
+      {sales.length === 0 ? (
+        <p className="text-sm text-slate-500">{isToday ? 'No sales yet today.' : 'No sales on this day.'}</p>
+      ) : (
+        <>
+          <div role="group" aria-label="Filter by payment" className="mb-2 flex gap-2 overflow-x-auto pb-1">
+            {(['all', 'cash', 'gcash', 'maya', 'utang'] as const).map((m) => (
+              <button
+                key={m}
+                className={`shrink-0 rounded-full border px-3 py-1 text-sm font-medium ${
+                  filter === m ? 'border-brand-700 bg-brand-700 text-white' : 'border-slate-300 bg-white text-slate-700'
+                }`}
+                onClick={() => {
+                  setFilter(m)
+                  setShown(PAGE)
+                  setOpen(null)
+                }}
+              >
+                {m === 'all' ? 'All' : METHOD_LABEL[m]}
+              </button>
+            ))}
+          </div>
+
+          {rows.length === 0 ? (
+            <p className="text-sm text-slate-500">No {filter === 'all' ? '' : METHOD_LABEL[filter] + ' '}sales on this day.</p>
+          ) : (
+            <ul className="divide-y divide-slate-100 rounded-xl border border-slate-200 bg-white">
+              {visible.map(({ sale, voided, names }) => {
+                const expanded = open === sale.id
+                return (
+                  <li key={sale.id}>
+                    <button
+                      className="flex w-full items-center gap-3 px-3 py-2 text-left"
+                      aria-expanded={expanded}
+                      onClick={() => setOpen(expanded ? null : sale.id)}
+                    >
+                      <span className="w-14 shrink-0 text-xs text-slate-500">{timeOf(sale.createdAt)}</span>
+                      <span className={`min-w-0 flex-1 truncate text-sm ${voided ? 'text-slate-400 line-through' : ''}`}>
+                        {sale.kind === 'void' ? 'Void of an earlier sale' : names || 'Sale'}
+                      </span>
+                      <span className="shrink-0 text-right">
+                        <span className={`block text-sm font-semibold ${sale.total < 0 ? 'text-red-600' : ''}`}>
+                          {formatPeso(sale.total)}
+                        </span>
+                        <span className="block text-[11px] text-slate-500">
+                          {METHOD_LABEL[sale.method]}
+                          {voided ? ' · voided' : ''}
+                        </span>
+                      </span>
+                    </button>
+                    {expanded && (
+                      <div className="space-y-2 bg-slate-50 px-3 pb-3 pt-1">
+                        <div className="text-xs text-slate-500">
+                          {formatDateTime(sale.createdAt)} · {METHOD_LABEL[sale.method]}
+                          {sale.reference ? ` · ref ${sale.reference}` : ''}
+                        </div>
+                        {names && sale.kind === 'sale' && <div className="text-sm">{names}</div>}
+                        <div className="flex gap-2">
+                          <button className={btn.chip} onClick={() => onReceipt(sale.id)}>
+                            Receipt
+                          </button>
+                          {sale.kind === 'sale' && !voided && (
+                            <button className={btn.chip} onClick={() => onVoid(sale.id)}>
+                              Void
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </li>
+                )
+              })}
+            </ul>
+          )}
+
+          {rows.length > shown && (
+            <div className="mt-2 grid grid-cols-2 gap-2">
+              <button className={btn.secondary} onClick={() => setShown(shown + 20)}>
+                Show more ({rows.length - shown} left)
+              </button>
+              <button className={btn.secondary} onClick={() => setShown(rows.length)}>
+                Show all
+              </button>
+            </div>
+          )}
+        </>
+      )}
+    </>
+  )
+}
 
 const METHOD_LABEL: Record<PayMethod, string> = { cash: 'Cash', gcash: 'GCash', maya: 'Maya', utang: 'Utang' }
 
@@ -36,7 +172,8 @@ export function Summary() {
   const sales = useLiveQuery(async () => {
     const rows = await db.sales.where('createdAt').between(start, end, true, false).reverse().sortBy('createdAt')
     const items = await db.saleItems.where('saleId').anyOf(rows.map((s) => s.id)).toArray()
-    const voided = new Set(rows.filter((s) => s.kind === 'void').map((s) => s.voidOf))
+    // the void can be on a later day than the sale, so look it up by the sale, not by today's rows
+    const voided = new Set((await db.sales.where('voidOf').anyOf(rows.map((s) => s.id)).toArray()).map((v) => v.voidOf))
     return rows.map((s) => ({
       sale: s,
       voided: voided.has(s.id),
@@ -70,9 +207,22 @@ export function Summary() {
         <button className={btn.chip} onClick={() => shiftDay(-1)} aria-label="Previous day">
           ‹
         </button>
-        <span className="font-semibold">
-          {isToday ? 'Today' : day.toLocaleDateString('en-PH', { weekday: 'short', month: 'short', day: 'numeric' })}
-        </span>
+        <label className="flex flex-col items-center text-center">
+          <span className="font-semibold">
+            {isToday ? 'Today' : day.toLocaleDateString('en-PH', { weekday: 'short', month: 'short', day: 'numeric' })}
+          </span>
+          <input
+            type="date"
+            aria-label="Go to a date"
+            value={toDateInput(day)}
+            max={toDateInput(new Date())}
+            onChange={(e) => {
+              const d = fromDateInput(e.target.value)
+              if (d && d.getTime() <= Date.now()) setDay(d)
+            }}
+            className="w-36 rounded-lg border border-slate-200 bg-white px-2 py-0.5 text-center text-xs text-slate-600"
+          />
+        </label>
         <button className={`${btn.chip} disabled:opacity-30`} disabled={isToday} onClick={() => shiftDay(1)} aria-label="Next day">
           ›
         </button>
@@ -144,39 +294,14 @@ export function Summary() {
       {isToday && <MovementSection />}
 
       <section className="px-4">
-        <h3 className="mb-1 font-semibold">Transactions</h3>
-        {!sales || sales.length === 0 ? (
-          <p className="text-sm text-slate-500">No sales on this day.</p>
-        ) : (
-          <ul className="divide-y divide-slate-100">
-            {sales.map(({ sale, voided, names }) => (
-              <li key={sale.id} className="py-2">
-                <div className="flex items-center gap-3">
-                  <div className="min-w-0 flex-1">
-                    <div className={`truncate text-sm ${voided ? 'text-slate-400 line-through' : ''}`}>
-                      {sale.kind === 'void' ? 'Void of an earlier sale' : names || 'Sale'}
-                    </div>
-                    <div className="text-xs text-slate-500">
-                      {formatDateTime(sale.createdAt)} · {METHOD_LABEL[sale.method]}
-                      {sale.reference ? ` ref ${sale.reference}` : ''}
-                      {voided ? ' · voided' : ''}
-                    </div>
-                  </div>
-                  <div className={`font-semibold ${sale.total < 0 ? 'text-red-600' : ''}`}>{formatPeso(sale.total)}</div>
-                </div>
-                <div className="mt-1 flex gap-2">
-                  <button className={btn.chip} onClick={() => showReceipt({ kind: 'sale', id: sale.id })}>
-                    Receipt
-                  </button>
-                  {sale.kind === 'sale' && !voided && (
-                    <button className={btn.chip} onClick={() => onVoid(sale.id)}>
-                      Void
-                    </button>
-                  )}
-                </div>
-              </li>
-            ))}
-          </ul>
+        {!sales ? null : (
+          <TransactionList
+            key={start}
+            sales={sales}
+            isToday={isToday}
+            onReceipt={(id) => showReceipt({ kind: 'sale', id })}
+            onVoid={onVoid}
+          />
         )}
       </section>
 
@@ -200,6 +325,7 @@ function SettingsSheet({ onClose }: { onClose: () => void }) {
   const [scanBeep, setScanBeep] = useState(s.scanBeep)
   const [scanDelay, setScanDelay] = useState(String(s.scanDelaySec))
   const [movementDays, setMovementDays] = useState(String(s.movementDays))
+  const [autoRemovePaid, setAutoRemovePaid] = useState(s.autoRemovePaid)
 
   const percentN = Number(percent)
   const minFeeC = toCentavos(minFee)
@@ -219,6 +345,7 @@ function SettingsSheet({ onClose }: { onClose: () => void }) {
           scanBeep,
           scanDelaySec: Number(scanDelay),
           movementDays: Number(movementDays),
+          autoRemovePaid,
         }),
       'Settings saved',
     )
@@ -263,6 +390,17 @@ function SettingsSheet({ onClose }: { onClose: () => void }) {
         <p className="text-xs text-slate-500">
           The fee is only a suggestion. You can type a different fee on each transaction.
         </p>
+
+        <h3 className="pt-2 font-semibold">Utang customers</h3>
+        <label className="flex items-start gap-2">
+          <input type="checkbox" className="mt-1" checked={autoRemovePaid} onChange={(e) => setAutoRemovePaid(e.target.checked)} />
+          <span>
+            Remove customers from the list once they owe nothing
+            <span className="block text-xs text-slate-500">
+              Their past sales and payments stay in the history. Done on the owner's phone when the Utang tab is open.
+            </span>
+          </span>
+        </label>
 
         <h3 className="pt-2 font-semibold">Fast and slow movers</h3>
         <Field

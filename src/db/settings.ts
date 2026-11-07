@@ -10,6 +10,7 @@ export interface Settings {
   walletMinFee: number // centavos
   scanBeep: boolean // play a beep when a barcode is scanned
   scanDelaySec: number // wait before the same barcode can be scanned again
+  autoRemovePaid: boolean // remove customers from the Utang list once they owe nothing
   movementDays: number // how far back to look when flagging fast and slow movers
 }
 
@@ -22,6 +23,7 @@ export const DEFAULT_SETTINGS: Settings = {
   walletMinFee: 500,
   scanBeep: true,
   scanDelaySec: 2,
+  autoRemovePaid: true,
   movementDays: 30,
 }
 

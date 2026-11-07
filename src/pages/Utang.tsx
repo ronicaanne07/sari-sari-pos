@@ -1,7 +1,9 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { useLiveQuery } from 'dexie-react-hooks'
 import { db, type CreditEntry, type Customer } from '../db/db'
-import { addCustomer, addManualCharge, recordPayment } from '../db/actions'
+import { addCustomer, addManualCharge, pruneSettledCustomers, recordPayment } from '../db/actions'
+import { useSettings } from '../db/settings'
+import { useAuth } from '../auth/AuthProvider'
 import { formatPeso, toCentavos } from '../lib/money'
 import { normalizeReference } from '../lib/wallet'
 import { ReferenceField, useReferenceStatus } from '../components/ReferenceField'
@@ -20,9 +22,19 @@ export function Utang() {
     for (const e of entries) balances.set(e.customerId, (balances.get(e.customerId) ?? 0) + e.amount)
     return customers.map((customer) => ({ customer, balance: balances.get(customer.id) ?? 0 }))
   }, [])
+  const { autoRemovePaid } = useSettings()
+  const { role, mode } = useAuth()
+  // Only the owner's phone (or a store without accounts) cleans up: cashier phones cannot delete shared data.
+  const canPrune = autoRemovePaid && (mode !== 'cloud' || role === 'owner')
   const [query, setQuery] = useState('')
   const [openId, setOpenId] = useState<number | null>(null)
   const [adding, setAdding] = useState(false)
+
+  // Clean up after the customer sheet is closed, so a fully paid customer does not vanish mid-receipt.
+  useEffect(() => {
+    if (!canPrune || !rows || openId !== null) return
+    if (rows.some((r) => r.balance === 0)) void pruneSettledCustomers()
+  }, [canPrune, rows, openId])
 
   const q = query.trim().toLowerCase()
   const list = (rows ?? [])
