@@ -25,10 +25,12 @@ import { formatPeso, toCentavos } from '../lib/money'
 import { formatPrice, formatStock, parseStock, pesoToInput, stockToInput } from '../lib/units'
 import { barcodeKey } from '../lib/barcode'
 import { Scanner } from '../components/Scanner'
+import { useMovement } from '../db/movement'
 import { Field, PageHeader, Segmented, Sheet, btn, inputCls, useToast } from '../ui'
 
 export function Products() {
   const toast = useToast()
+  const movement = useMovement()
   const products = useLiveQuery(() => db.products.toArray(), [])
   const categories = useLiveQuery(
       () => db.categories.orderBy('sortOrder').toArray(),
@@ -173,6 +175,12 @@ export function Products() {
                 </div>
                 <div className="text-xs text-slate-400">
                   {categories?.find((c) => c.id === p.categoryId)?.name ?? 'Uncategorized'}
+                  {movement?.byProduct.get(p.id)?.label === 'fast' && (
+                    <span className="ml-2 rounded-full bg-green-100 px-2 py-0.5 font-semibold text-green-700">🔥 Fast</span>
+                  )}
+                  {movement?.byProduct.get(p.id)?.label === 'slow' && (
+                    <span className="ml-2 rounded-full bg-slate-200 px-2 py-0.5 font-semibold text-slate-600">🐢 Slow</span>
+                  )}
                 </div>
                 <div className="text-sm text-slate-500">
                   {formatPrice(p.price, p.unitType)} ·{' '}

@@ -6,6 +6,8 @@ import { exportBackup, importBackup, resetAllData } from '../db/backup'
 import { seedSampleProducts } from '../db/seed'
 import { useAuth } from '../auth/AuthProvider'
 import { beep, prepareBeep } from '../lib/beep'
+import { useMovement } from '../db/movement'
+import type { Product } from '../db/db'
 import {
   downloadCloudBackup,
   isStorePhone,
@@ -139,6 +141,8 @@ export function Summary() {
         </section>
       )}
 
+      {isToday && <MovementSection />}
+
       <section className="px-4">
         <h3 className="mb-1 font-semibold">Transactions</h3>
         {!sales || sales.length === 0 ? (
@@ -195,6 +199,7 @@ function SettingsSheet({ onClose }: { onClose: () => void }) {
   const [minFee, setMinFee] = useState(pesoToInput(s.walletMinFee))
   const [scanBeep, setScanBeep] = useState(s.scanBeep)
   const [scanDelay, setScanDelay] = useState(String(s.scanDelaySec))
+  const [movementDays, setMovementDays] = useState(String(s.movementDays))
 
   const percentN = Number(percent)
   const minFeeC = toCentavos(minFee)
@@ -213,6 +218,7 @@ function SettingsSheet({ onClose }: { onClose: () => void }) {
           walletMinFee: minFeeC,
           scanBeep,
           scanDelaySec: Number(scanDelay),
+          movementDays: Number(movementDays),
         }),
       'Settings saved',
     )
@@ -258,6 +264,19 @@ function SettingsSheet({ onClose }: { onClose: () => void }) {
           The fee is only a suggestion. You can type a different fee on each transaction.
         </p>
 
+        <h3 className="pt-2 font-semibold">Fast and slow movers</h3>
+        <Field
+          label="Look back"
+          hint="Products that sell often over this period are flagged Fast. Products that sold once or never are flagged Slow."
+        >
+          <select value={movementDays} onChange={(e) => setMovementDays(e.target.value)} className={inputCls}>
+            <option value="14">14 days</option>
+            <option value="30">30 days</option>
+            <option value="60">60 days</option>
+            <option value="90">90 days</option>
+          </select>
+        </Field>
+
         <h3 className="pt-2 font-semibold">Barcode scanner</h3>
         <label className="flex items-center gap-2">
           <input type="checkbox" checked={scanBeep} onChange={(e) => setScanBeep(e.target.checked)} />
@@ -286,6 +305,74 @@ function SettingsSheet({ onClose }: { onClose: () => void }) {
         </Field>
       </div>
     </Sheet>
+  )
+}
+
+const stockValue = (p: Product) => (p.unitType === 'weight' ? Math.round((p.stock * p.cost) / 1000) : p.stock * p.cost)
+
+/** Which products sell fast (keep them stocked) and which sit on the shelf (stop buying more). */
+function MovementSection() {
+  const movement = useMovement()
+  const products = useLiveQuery(() => db.products.toArray(), [])
+  if (!movement || !products) return null
+
+  const rows = products.flatMap((p) => {
+    const m = movement.byProduct.get(p.id)
+    return m ? [{ p, m }] : []
+  })
+  const fast = rows.filter((r) => r.m.label === 'fast').sort((a, b) => b.m.times - a.m.times || a.p.name.localeCompare(b.p.name))
+  const slow = rows.filter((r) => r.m.label === 'slow').sort((a, b) => a.m.times - b.m.times || a.p.name.localeCompare(b.p.name))
+  if (fast.length === 0 && slow.length === 0) return null
+
+  const sold = (n: number) => (n === 0 ? 'no sales' : n === 1 ? 'sold once' : `sold ${n} times`)
+  const tiedUp = slow.reduce((sum, r) => sum + stockValue(r.p), 0)
+
+  return (
+    <section className="mx-4 mb-4 space-y-3" aria-label="Fast and slow movers">
+      <h3 className="font-semibold">Fast and slow movers · last {movement.days} days</h3>
+
+      {fast.length > 0 && (
+        <div className="rounded-2xl border border-green-300 bg-green-50 p-3">
+          <h4 className="mb-1 font-semibold text-green-800">🔥 Fast movers ({fast.length})</h4>
+          <p className="mb-1 text-xs text-green-800">Your best sellers. Do not let these run out.</p>
+          <ul className="text-sm">
+            {fast.slice(0, 10).map(({ p, m }) => (
+              <li key={p.id} className="flex justify-between gap-2 py-0.5">
+                <span className="truncate">{p.name}</span>
+                <span className="shrink-0 text-right">
+                  {sold(m.times)} ·{' '}
+                  <span className={p.stock <= p.lowStockAt ? 'font-semibold text-red-600' : ''}>
+                    {formatStock(p.stock, p.unitType)}
+                    {p.unitType === 'piece' ? ' pcs' : ''} left{p.stock <= p.lowStockAt ? ' · restock' : ''}
+                  </span>
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {slow.length > 0 && (
+        <div className="rounded-2xl border border-slate-300 bg-slate-50 p-3">
+          <h4 className="mb-1 font-semibold text-slate-700">🐢 Slow movers ({slow.length})</h4>
+          <p className="mb-1 text-xs text-slate-600">
+            On the shelf and barely selling. About {formatPeso(tiedUp)} of your money is tied up in them. Think of a
+            promo, or stop restocking.
+          </p>
+          <ul className="text-sm">
+            {slow.slice(0, 10).map(({ p, m }) => (
+              <li key={p.id} className="flex justify-between gap-2 py-0.5">
+                <span className="truncate">{p.name}</span>
+                <span className="shrink-0 text-right">
+                  {sold(m.times)} · {formatStock(p.stock, p.unitType)}
+                  {p.unitType === 'piece' ? ' pcs' : ''} left
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </section>
   )
 }
 
