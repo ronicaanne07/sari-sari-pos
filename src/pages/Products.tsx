@@ -12,8 +12,10 @@ import {
   createCategory,
   createPack,
   createProduct,
+  deleteArchivedProducts,
   deleteCategory,
   deletePack,
+  deleteProduct,
   renameCategory,
   restock,
   restockPack,
@@ -26,6 +28,7 @@ import { Scanner } from '../components/Scanner'
 import { Field, PageHeader, Segmented, Sheet, btn, inputCls, useToast } from '../ui'
 
 export function Products() {
+  const toast = useToast()
   const products = useLiveQuery(() => db.products.toArray(), [])
   const categories = useLiveQuery(
       () => db.categories.orderBy('sortOrder').toArray(),
@@ -38,6 +41,22 @@ export function Products() {
   const [showArchived, setShowArchived] = useState(false)
   const [editing, setEditing] = useState<Product | 'new' | null>(null)
   const [restocking, setRestocking] = useState<Product | null>(null)
+
+  const archivedCount = (products ?? []).filter((p) => p.archived).length
+
+  async function removeAllArchived() {
+    if (archivedCount === 0) return
+    const many = archivedCount === 1 ? '1 archived product' : `all ${archivedCount} archived products`
+    if (
+      !window.confirm(
+        `Permanently delete ${many}?\n\nPast sales and receipts keep their records. The products, their packs and barcodes are removed from every phone. This cannot be undone.`,
+      )
+    )
+      return
+    await toast.run(async () => {
+      await deleteArchivedProducts()
+    }, `${archivedCount} archived product${archivedCount === 1 ? '' : 's'} deleted`)
+  }
 
   const q = query.trim().toLowerCase()
   const list = (products ?? [])
@@ -130,6 +149,11 @@ export function Products() {
           <input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} />
           Show archived (hidden from Sell)
         </label>
+        {showArchived && archivedCount > 0 && (
+          <button className={`${btn.secondary} w-full border-red-300! text-red-700!`} onClick={removeAllArchived}>
+            Delete {archivedCount === 1 ? 'the archived product' : `all ${archivedCount} archived products`} permanently
+          </button>
+        )}
       </div>
 
       {!products ? (
@@ -246,6 +270,18 @@ function ProductSheet({ product, onClose }: { product: Product | null; onClose: 
     if (res.ok) onClose()
   }
 
+  async function removeForever() {
+    if (!product) return
+    if (
+      !window.confirm(
+        `Permanently delete "${product.name}"?\n\nPast sales and receipts keep their records. The product, its packs and its barcode are removed from every phone. This cannot be undone.`,
+      )
+    )
+      return
+    const res = await toast.run(() => deleteProduct(product.id), 'Product deleted')
+    if (res.ok) onClose()
+  }
+
   const unitWord = unitType === 'weight' ? 'kg' : 'piece'
 
   return (
@@ -327,6 +363,11 @@ function ProductSheet({ product, onClose }: { product: Product | null; onClose: 
             <button className={`${btn.secondary} w-full`} onClick={toggleArchive}>
               {product.archived ? 'Restore to Sell' : 'Archive (hide from Sell)'}
             </button>
+            {product.archived && (
+              <button className={`${btn.danger} w-full`} onClick={removeForever}>
+                Delete permanently
+              </button>
+            )}
           </>
         )}
       </div>

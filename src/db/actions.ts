@@ -205,6 +205,38 @@ export async function deletePack(packId: number): Promise<void> {
   })
 }
 
+/**
+ * Permanently removes an ARCHIVED product and its packs (and frees its barcode). Other phones drop it too.
+ * Past sales stay exactly as they were: every sale line keeps its own copy of the product's name,
+ * price and cost, so receipts, reports and voids keep working. Stock history is kept for the same reason.
+ * Only archived products can be deleted, so the product you sell today can't be removed by a stray tap.
+ */
+async function removeArchivedProduct(id: number): Promise<void> {
+  const product = await db.products.get(id)
+  if (!product) throw new PosError('Product not found')
+  if (!product.archived) throw new PosError('Archive the product first. Only archived products can be deleted.')
+  const packs = await db.productPacks.where('productId').equals(id).toArray()
+  for (const pack of packs) {
+    await db.productPacks.delete(pack.id)
+    await db.tombstones.add({ tbl: 'productPacks', rowId: String(pack.id) })
+  }
+  await db.products.delete(id)
+  await db.tombstones.add({ tbl: 'products', rowId: String(id) }) // so other phones drop it too
+}
+
+export async function deleteProduct(id: number): Promise<void> {
+  await db.transaction('rw', [db.products, db.productPacks, db.tombstones], () => removeArchivedProduct(id))
+}
+
+/** Deletes every archived product. Returns how many were removed. */
+export async function deleteArchivedProducts(): Promise<number> {
+  return db.transaction('rw', [db.products, db.productPacks, db.tombstones], async () => {
+    const archived = (await db.products.toArray()).filter((p) => p.archived)
+    for (const p of archived) await removeArchivedProduct(p.id)
+    return archived.length
+  })
+}
+
 /* --------------------------------------------------------------------- stock */
 
 /** `qty` is in stock units (pieces or grams). `cost` optionally updates the per-unit/per-kg cost. */
